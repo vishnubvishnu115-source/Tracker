@@ -1,0 +1,94 @@
+<resources>
+    <string name="app_name">TrackPulse</string>
+    <string name="brand_tagline">Real-Time Field GPS Tracker</string>
+    <string name="login_card_title">Sign in to continue</string>
+    <string name="login_card_subtitle">Enter your registered work email to start live GPS telemetry syncing.</string>
+    <string name="email_label">Email Address</string>
+    <string name="email_placeholder">name@company.com</string>
+    <string name="sign_in_button">Sign In</string>
+    <string name="signing_in_label">Verifying…</string>
+    <string name="error_invalid_email">Please enter a valid email address.</string>
+    <string name="error_auth_failed">Authentication failed. Please verify your email and try again.</string>
+
+    <string name="logout_button">Logout</string>
+    <string name="user_id_prefix">ID</string>
+    <string name="wake_lock_active">Wake Lock On</string>
+    <string name="wake_lock_idle">Wake Lock Off</string>
+
+    <string name="action_start_tracking">Enable Location &amp; Start Tracking</string>
+    <string name="action_starting_tracking">Acquiring GPS Lock…</string>
+    <string name="action_stop_tracking">Stop Tracking</string>
+    <string name="action_open_settings">Settings</string>
+    <string name="action_dismiss">Dismiss</string>
+
+    <string name="header_cycle_title">Next History Sync</string>
+    <string name="header_cycle_subtitle_active">Streaming GPS every 2s · History every 60s</string>
+    <string name="header_cycle_subtitle_idle">Ready to connect high-accuracy GPS</string>
+    <string name="header_total_packets">Total Syncs</string>
+
+    <string name="section_live_gps">Live GPS Coordinates</string>
+    <string name="label_latitude">LATITUDE</string>
+    <string name="label_longitude">LONGITUDE</string>
+    <string name="label_accuracy">GPS Accuracy</string>
+    <string name="status_tracking_live">Live</string>
+    <string name="status_acquiring_gps">Acquiring</string>
+    <string name="status_standby">Standby</string>
+
+    <string name="card_live_sync_title">Live Sync (2s)</string>
+    <string name="card_history_log_title">History Log (1m)</string>
+    <string name="label_last_sync">Last sync</string>
+    <string name="label_next_upload">Next upload</string>
+    <string name="label_uploading">Syncing…</string>
+    <string name="label_never_synced">--:--:--</string>
+
+    <string name="section_status_timeline">Tracking Status Timeline</string>
+    <string name="timeline_step_auth_title">Operator Authenticated</string>
+    <string name="timeline_step_gps_title">High-Accuracy GPS Stream</string>
+    <string name="timeline_step_live_title">Live Sync Channel (2s)</string>
+    <string name="timeline_step_history_title">History Checkpoint (1m)</string>
+
+    <string name="section_recent_activity">Recent Entries</string>
+    <string name="empty_activity_log">No sync entries yet. Tap Start Tracking below to stream live location updates.</string>
+    <string name="empty_filtered_log">No entries match the selected filter.</string>
+
+    <string name="filter_all">All</string>
+    <string name="filter_live">Live (2s)</string>
+    <string name="filter_history">History (1m)</string>
+    <string name="filter_alerts">Errors</string>
+
+    <string name="nav_tracker">Tracker</string>
+    <string name="nav_activity">Activity</string>
+    <string name="nav_account">Account</string>
+
+    <string name="account_section_operator">Operator Profile</string>
+    <string name="account_section_appearance">Appearance &amp; Theme</string>
+    <string name="account_theme_mode_label">Theme Mode</string>
+    <string name="account_theme_accent_label">Accent Color</string>
+    <string name="theme_mode_light">Light</string>
+    <string name="theme_mode_dark">Dark</string>
+    <string name="theme_mode_system">System</string>
+    <string name="account_change_photo">Change Photo</string>
+    <string name="photo_sheet_title">Update Profile Photo</string>
+    <string name="photo_sheet_subtitle">Choose an image from your device gallery or Google Drive</string>
+    <string name="photo_source_gallery">Photo Gallery</string>
+    <string name="photo_source_gallery_desc">Pick directly from your device photos</string>
+    <string name="photo_source_drive">Google Drive &amp; Files</string>
+    <string name="photo_source_drive_desc">Browse Google Drive, Downloads, or Cloud files</string>
+    <string name="photo_source_remove">Remove Current Photo</string>
+
+    <string name="account_section_diagnostics">Device &amp; Sync Settings</string>
+    <string name="account_gps_permission">Location Permission</string>
+    <string name="account_permission_granted">Granted</string>
+    <string name="account_permission_needed">Required</string>
+    <string name="account_wake_lock">Screen Wake Lock</string>
+    <string name="account_intervals">Sync Schedule</string>
+    <string name="account_intervals_value">2s Live · 60s History</string>
+
+    <string name="error_permission_denied">Location permission was denied. Enable precise location access to stream live GPS coordinates.</string>
+    <string name="error_location_disabled">Device GPS is turned off. Please enable Location Services in Android Settings and try again.</string>
+    <string name="cd_brand_logo">TrackPulse GPS beacon logo</string>
+    <string name="cd_logout_icon">Logout of current operator session</string>
+    <string name="cd_edit_avatar">Change profile photo</string>
+    <string name="cd_profile_avatar">Operator profile photo</string>
+    <string name="cd_dismiss_error">Dismiss error alert</string>
+</resources>

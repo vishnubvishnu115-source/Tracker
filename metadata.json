@@ -1,0 +1,6 @@
+{
+  "name": "TrackPulse",
+  "description": "Real-time mobile GPS tracker with Zoho Creator live sync, 1-minute history logging, and screen wake lock.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
