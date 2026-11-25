@@ -81,8 +81,50 @@
     <string name="account_permission_granted">Granted</string>
     <string name="account_permission_needed">Required</string>
     <string name="account_wake_lock">Screen Wake Lock</string>
+    <string name="account_background_service">Background Tracking</string>
+    <string name="account_background_active">Active · Runs if closed</string>
+    <string name="account_background_ready">Ready</string>
     <string name="account_intervals">Sync Schedule</string>
     <string name="account_intervals_value">2s Live · 60s History</string>
+    <string name="account_intervals_speed_value">2s Live · Speed Auto (15s–120s)</string>
+
+    <string name="section_speed_history">Speed-Based History Sync</string>
+    <string name="speed_mode_auto">Speed Auto</string>
+    <string name="speed_mode_fixed">Fixed 60s</string>
+    <string name="speed_mode_desc_auto">History sync adjusts automatically based on travel speed</string>
+    <string name="speed_mode_desc_fixed">History syncs at a fixed 60-second interval regardless of speed</string>
+    <string name="label_current_speed">Speed</string>
+
+    <string name="action_slide_to_stop">Slide to stop tracking</string>
+    <string name="action_release_to_stop">Release to stop</string>
+    <string name="action_copy_coords">Copy</string>
+    <string name="toast_coords_copied">Coordinates copied to clipboard</string>
+    <string name="toast_tracking_started">Tracking active · stays on even if app closes</string>
+    <string name="toast_tracking_stopped">Tracking stopped &amp; background service ended</string>
+    <string name="toast_speed_mode_auto">Speed-based history sync enabled</string>
+    <string name="toast_speed_mode_fixed">Switched to fixed 60s history sync</string>
+
+    <string name="notif_channel_name">Live GPS Tracking</string>
+    <string name="notif_channel_description">Keeps real-time GPS tracking running when TrackPulse is closed until you stop it.</string>
+    <string name="notif_tracking_active_title">TrackPulse · Live Tracking Active</string>
+    <string name="notif_tracking_acquiring_title">TrackPulse · Acquiring GPS Lock…</string>
+    <string name="notif_tracking_acquiring_body">Connecting to high-accuracy satellite positioning…</string>
+    <string name="notif_tracking_summary">Live: %1$d · History: %2$d · Next 1m sync in %3$ds</string>
+    <string name="notif_tracking_summary_speed">%1$d km/h · Live: %2$d · Hist: %3$d · Next in %4$ds</string>
+    <string name="notif_tracking_background_hint">Stays active even when the app is closed until you tap Stop.</string>
+
+    <string name="signal_excellent">Excellent</string>
+    <string name="signal_good">Good</string>
+    <string name="signal_fair">Fair</string>
+    <string name="signal_weak">Weak</string>
+    <string name="signal_no_fix">No Fix</string>
+
+    <string name="logout_sheet_title_active">Stop tracking &amp; sign out?</string>
+    <string name="logout_sheet_title_idle">Sign out of TrackPulse?</string>
+    <string name="logout_sheet_desc_active">You are currently streaming live GPS telemetry in the background. Signing out will immediately stop the tracking service, clear the scheduler, and release wake locks.</string>
+    <string name="logout_sheet_desc_idle">You can sign back in anytime using your registered work email.</string>
+    <string name="logout_sheet_confirm_active">Stop &amp; Logout</string>
+    <string name="logout_sheet_cancel">Stay Signed In</string>
 
     <string name="error_permission_denied">Location permission was denied. Enable precise location access to stream live GPS coordinates.</string>
     <string name="error_location_disabled">Device GPS is turned off. Please enable Location Services in Android Settings and try again.</string>
@@ -90,5 +132,7 @@
     <string name="cd_logout_icon">Logout of current operator session</string>
     <string name="cd_edit_avatar">Change profile photo</string>
     <string name="cd_profile_avatar">Operator profile photo</string>
+    <string name="cd_copy_coords">Copy coordinates to clipboard</string>
+    <string name="cd_expand_entry">Expand sync entry details</string>
     <string name="cd_dismiss_error">Dismiss error alert</string>
 </resources>

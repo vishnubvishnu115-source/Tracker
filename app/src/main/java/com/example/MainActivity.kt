@@ -13,18 +13,16 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.TrackerViewModel
+import com.example.ui.components.BrandedLaunchSplash
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.TrackerDashboardScreen
 import com.example.ui.theme.TrackPulseTheme
@@ -87,12 +85,7 @@ private fun TrackPulseApp(
         ) { state ->
             when (state) {
                 0 -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                    }
+                    BrandedLaunchSplash()
                 }
                 1 -> {
                     LoginScreen(
@@ -113,6 +106,7 @@ private fun TrackPulseApp(
                         onDismissError = viewModel::dismissError,
                         onSelectThemeMode = viewModel::setThemeMode,
                         onSelectAccentTheme = viewModel::setAccentTheme,
+                        onSelectHistorySyncMode = viewModel::setHistorySyncMode,
                         onPickProfileImage = viewModel::saveProfileImageFromUri,
                         onRemoveProfileImage = viewModel::removeProfileImage,
                         onLogout = viewModel::logout,

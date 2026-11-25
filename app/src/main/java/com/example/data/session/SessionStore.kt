@@ -3,12 +3,14 @@ package com.example.data.session
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.model.AppAccentTheme
 import com.example.data.model.AppThemeMode
+import com.example.data.model.HistorySyncMode
 import com.example.data.model.UserPreferences
 import com.example.data.model.UserSession
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +30,9 @@ class SessionStore(private val context: Context) {
         val ACCENT_THEME = stringPreferencesKey("accent_theme")
         val PROFILE_IMAGE_PATH = stringPreferencesKey("profile_image_path")
         val PROFILE_IMAGE_VERSION = longPreferencesKey("profile_image_version")
+        val HISTORY_SYNC_MODE = stringPreferencesKey("history_sync_mode")
+        val IS_TRACKING_ACTIVE = booleanPreferencesKey("is_tracking_active")
+        val ACTIVE_TRACKING_USER_ID = stringPreferencesKey("active_tracking_user_id")
     }
 
     val sessionFlow: Flow<UserSession?> = context.sessionDataStore.data.map { prefs ->
@@ -48,12 +53,30 @@ class SessionStore(private val context: Context) {
         val accentTheme = prefs[Keys.ACCENT_THEME]
             ?.let { runCatching { AppAccentTheme.valueOf(it) }.getOrNull() }
             ?: AppAccentTheme.INDIGO
+        val historySyncMode = prefs[Keys.HISTORY_SYNC_MODE]
+            ?.let { runCatching { HistorySyncMode.valueOf(it) }.getOrNull() }
+            ?: HistorySyncMode.SPEED_ADAPTIVE
         UserPreferences(
             themeMode = themeMode,
             accentTheme = accentTheme,
             profileImagePath = prefs[Keys.PROFILE_IMAGE_PATH],
             profileImageVersion = prefs[Keys.PROFILE_IMAGE_VERSION] ?: 0L,
+            historySyncMode = historySyncMode,
         )
+    }
+
+    val historySyncModeFlow: Flow<HistorySyncMode> = context.sessionDataStore.data.map { prefs ->
+        prefs[Keys.HISTORY_SYNC_MODE]
+            ?.let { runCatching { HistorySyncMode.valueOf(it) }.getOrNull() }
+            ?: HistorySyncMode.SPEED_ADAPTIVE
+    }
+
+    val isTrackingPersistedFlow: Flow<Boolean> = context.sessionDataStore.data.map { prefs ->
+        prefs[Keys.IS_TRACKING_ACTIVE] ?: false
+    }
+
+    val activeTrackingUserIdFlow: Flow<String?> = context.sessionDataStore.data.map { prefs ->
+        prefs[Keys.ACTIVE_TRACKING_USER_ID]
     }
 
     suspend fun saveSession(session: UserSession) {
@@ -76,6 +99,12 @@ class SessionStore(private val context: Context) {
         }
     }
 
+    suspend fun saveHistorySyncMode(mode: HistorySyncMode) {
+        context.sessionDataStore.edit { prefs ->
+            prefs[Keys.HISTORY_SYNC_MODE] = mode.name
+        }
+    }
+
     suspend fun saveProfileImage(path: String?, version: Long) {
         context.sessionDataStore.edit { prefs ->
             if (path.isNullOrBlank()) {
@@ -88,11 +117,24 @@ class SessionStore(private val context: Context) {
         }
     }
 
+    suspend fun saveTrackingActive(active: Boolean, userId: String?) {
+        context.sessionDataStore.edit { prefs ->
+            prefs[Keys.IS_TRACKING_ACTIVE] = active
+            if (active && !userId.isNullOrBlank()) {
+                prefs[Keys.ACTIVE_TRACKING_USER_ID] = userId
+            } else {
+                prefs.remove(Keys.ACTIVE_TRACKING_USER_ID)
+            }
+        }
+    }
+
     suspend fun clearSession() {
         context.sessionDataStore.edit { prefs ->
             prefs.remove(Keys.USER_ID)
             prefs.remove(Keys.NAME)
             prefs.remove(Keys.EMAIL)
+            prefs.remove(Keys.IS_TRACKING_ACTIVE)
+            prefs.remove(Keys.ACTIVE_TRACKING_USER_ID)
         }
     }
 }

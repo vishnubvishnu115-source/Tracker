@@ -80,8 +80,9 @@ import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.AppAccentTheme
 import com.example.data.model.AppThemeMode
+import com.example.data.model.HistorySyncMode
+import com.example.data.model.SpeedHistoryTier
 import com.example.data.model.UserSession
-import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.LocalTelemetryColors
 import com.example.ui.theme.accentPaletteFor
 import java.io.File
@@ -176,10 +177,15 @@ fun AccountTabContent(
     isUpdatingAvatar: Boolean,
     themeMode: AppThemeMode,
     accentTheme: AppAccentTheme,
+    historySyncMode: HistorySyncMode,
+    currentSpeedKmh: Float,
+    activeSpeedTier: SpeedHistoryTier,
     hasPermission: Boolean,
+    isTracking: Boolean,
     isWakeLockActive: Boolean,
     onSelectThemeMode: (AppThemeMode) -> Unit,
     onSelectAccentTheme: (AppAccentTheme) -> Unit,
+    onSelectHistorySyncMode: (HistorySyncMode) -> Unit,
     onPickProfileImage: (Uri) -> Unit,
     onRemoveProfileImage: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -353,7 +359,7 @@ fun AccountTabContent(
                         Text(
                             text = "${stringResource(R.string.user_id_prefix)}: ${session.userId}",
                             style = MaterialTheme.typography.labelMedium.copy(
-                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.SemiBold,
                             ),
                             color = MaterialTheme.colorScheme.primary,
                         )
@@ -574,7 +580,17 @@ fun AccountTabContent(
             }
         }
 
-        // 3. Device & Sync Settings Card (Fixed clean single-line alignment!)
+        // 3. Speed-Based History Sync Card
+        SpeedAdaptiveSyncCard(
+            historySyncMode = historySyncMode,
+            currentSpeedKmh = currentSpeedKmh,
+            activeSpeedTier = activeSpeedTier,
+            isTracking = isTracking,
+            onSelectMode = onSelectHistorySyncMode,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        // 4. Device & Sync Settings Card (Fixed clean single-line alignment!)
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surface,
@@ -614,6 +630,25 @@ fun AccountTabContent(
                 )
                 HorizontalDivider(color = telemetryColors.cardBorder)
                 AccountBadgeRow(
+                    label = stringResource(R.string.account_background_service),
+                    badgeText = if (isTracking) {
+                        stringResource(R.string.account_background_active)
+                    } else {
+                        stringResource(R.string.account_background_ready)
+                    },
+                    bgColor = if (isTracking) {
+                        telemetryColors.liveGreenContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainer
+                    },
+                    fgColor = if (isTracking) {
+                        telemetryColors.liveGreenText
+                    } else {
+                        telemetryColors.mutedText
+                    },
+                )
+                HorizontalDivider(color = telemetryColors.cardBorder)
+                AccountBadgeRow(
                     label = stringResource(R.string.account_wake_lock),
                     badgeText = if (isWakeLockActive) {
                         stringResource(R.string.wake_lock_active)
@@ -634,7 +669,11 @@ fun AccountTabContent(
                 HorizontalDivider(color = telemetryColors.cardBorder)
                 AccountInfoRow(
                     label = stringResource(R.string.account_intervals),
-                    value = stringResource(R.string.account_intervals_value),
+                    value = if (historySyncMode == HistorySyncMode.SPEED_ADAPTIVE) {
+                        stringResource(R.string.account_intervals_speed_value)
+                    } else {
+                        stringResource(R.string.account_intervals_value)
+                    },
                     isMono = true,
                 )
 
@@ -839,14 +878,10 @@ private fun AccountInfoRow(
             textAlign = TextAlign.End,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            style = if (isMono) {
-                MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = JetBrainsMonoFontFamily,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            } else {
-                MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-            },
+            style = MaterialTheme.typography.bodyMedium.copy(
+                fontWeight = FontWeight.SemiBold,
+                fontFeatureSettings = if (isMono) "tnum" else null,
+            ),
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )

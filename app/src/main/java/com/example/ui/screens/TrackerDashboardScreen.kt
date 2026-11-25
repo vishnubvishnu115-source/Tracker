@@ -5,15 +5,19 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import android.view.WindowManager
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -35,6 +39,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -65,7 +70,9 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LocationOn
@@ -74,7 +81,7 @@ import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.ScreenLockPortrait
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.StopCircle
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.outlined.GpsFixed
@@ -107,15 +114,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -124,13 +137,19 @@ import com.example.R
 import com.example.data.model.AppAccentTheme
 import com.example.data.model.AppThemeMode
 import com.example.data.model.GpsLocation
+import com.example.data.model.HistorySyncMode
+import com.example.data.model.SpeedHistoryTier
 import com.example.data.model.SyncLogEntry
 import com.example.data.model.SyncType
 import com.example.data.model.UserSession
 import com.example.ui.TrackerUiState
 import com.example.ui.components.AccountTabContent
+import com.example.ui.components.FloatingToastPill
+import com.example.ui.components.GpsSignalBars
+import com.example.ui.components.LogoutConfirmationSheet
 import com.example.ui.components.ProfileAvatar
-import com.example.ui.theme.JetBrainsMonoFontFamily
+import com.example.ui.components.ShimmerBar
+import com.example.ui.components.SlideToStopTrack
 import com.example.ui.theme.LocalTelemetryColors
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -159,16 +178,50 @@ fun TrackerDashboardScreen(
     onDismissError: () -> Unit,
     onSelectThemeMode: (AppThemeMode) -> Unit,
     onSelectAccentTheme: (AppAccentTheme) -> Unit,
+    onSelectHistorySyncMode: (HistorySyncMode) -> Unit,
     onPickProfileImage: (Uri) -> Unit,
     onRemoveProfileImage: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
     val session = uiState.session ?: return
 
     var selectedTab by rememberSaveable { mutableStateOf(TrackerNavTab.TRACKER) }
     var selectedFilter by rememberSaveable { mutableStateOf(LogFilter.ALL) }
+    var showLogoutSheet by remember { mutableStateOf(false) }
+    var toastMessage by remember { mutableStateOf<String?>(null) }
+    var askedNotificationPermission by rememberSaveable { mutableStateOf(false) }
+
+    val coordsCopiedLabel = stringResource(R.string.toast_coords_copied)
+    val trackingStartedLabel = stringResource(R.string.toast_tracking_started)
+    val trackingStoppedLabel = stringResource(R.string.toast_tracking_stopped)
+    val speedAutoLabel = stringResource(R.string.toast_speed_mode_auto)
+    val speedFixedLabel = stringResource(R.string.toast_speed_mode_fixed)
+
+    var previousTrackingState by remember { mutableStateOf(uiState.isTracking) }
+    LaunchedEffect(uiState.isTracking) {
+        if (!previousTrackingState && uiState.isTracking) {
+            toastMessage = trackingStartedLabel
+        }
+        previousTrackingState = uiState.isTracking
+    }
+
+    LaunchedEffect(toastMessage) {
+        if (toastMessage != null) {
+            delay(2_200L)
+            toastMessage = null
+        }
+    }
+
+    val copyCoordsToClipboard: (Double, Double) -> Unit = { lat, lng ->
+        val formatted = String.format(Locale.US, "%.6f, %.6f", lat, lng)
+        clipboardManager.setText(AnnotatedString(formatted))
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        toastMessage = coordsCopiedLabel
+    }
 
     BackHandler(enabled = selectedTab != TrackerNavTab.TRACKER) {
         selectedTab = TrackerNavTab.TRACKER
@@ -192,7 +245,7 @@ fun TrackerDashboardScreen(
     ) { grants ->
         val fineGranted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
         val coarseGranted = grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        if (fineGranted || coarseGranted) {
+        if (fineGranted || coarseGranted || hasLocationPermission()) {
             onStartTracking()
         } else {
             onPermissionDenied()
@@ -200,15 +253,29 @@ fun TrackerDashboardScreen(
     }
 
     val handleStartRequest: () -> Unit = {
-        if (hasLocationPermission()) {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        val needsNotificationPermission =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !askedNotificationPermission &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                ) != PackageManager.PERMISSION_GRANTED
+
+        if (hasLocationPermission() && !needsNotificationPermission) {
             onStartTracking()
         } else {
-            permissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                ),
-            )
+            val permissionsToRequest = buildList {
+                if (!hasLocationPermission()) {
+                    add(Manifest.permission.ACCESS_FINE_LOCATION)
+                    add(Manifest.permission.ACCESS_COARSE_LOCATION)
+                }
+                if (needsNotificationPermission) {
+                    askedNotificationPermission = true
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }.toTypedArray()
+            permissionLauncher.launch(permissionsToRequest)
         }
     }
 
@@ -219,6 +286,17 @@ fun TrackerDashboardScreen(
             LogFilter.HISTORY -> uiState.recentLogs.filter { it.type == SyncType.HISTORY && it.success }
             LogFilter.ERRORS -> uiState.recentLogs.filter { !it.success }
         }
+    }
+
+    if (showLogoutSheet) {
+        LogoutConfirmationSheet(
+            isTracking = uiState.isTracking,
+            onDismiss = { showLogoutSheet = false },
+            onConfirmLogout = {
+                showLogoutSheet = false
+                onLogout()
+            },
+        )
     }
 
     Scaffold(
@@ -232,7 +310,7 @@ fun TrackerDashboardScreen(
                 isTracking = uiState.isTracking,
                 isWakeLockActive = uiState.isWakeLockActive,
                 onAvatarClick = { selectedTab = TrackerNavTab.ACCOUNT },
-                onLogout = onLogout,
+                onLogout = { showLogoutSheet = true },
             )
         },
         bottomBar = {
@@ -241,7 +319,10 @@ fun TrackerDashboardScreen(
                     isTracking = uiState.isTracking,
                     isAcquiringInitialFix = uiState.isAcquiringInitialFix,
                     onStartClick = handleStartRequest,
-                    onStopClick = onStopTracking,
+                    onStopClick = {
+                        onStopTracking()
+                        toastMessage = trackingStoppedLabel
+                    },
                 )
 
                 MinimalBottomNavigationBar(
@@ -251,180 +332,210 @@ fun TrackerDashboardScreen(
             }
         },
     ) { innerPadding ->
-        // Smooth directional horizontal slide + fade transition between tabs
-        AnimatedContent(
-            targetState = selectedTab,
-            transitionSpec = {
-                val movingForward = targetState.index >= initialState.index
-                val slideOffset = if (movingForward) {
-                    { width: Int -> width / 5 }
-                } else {
-                    { width: Int -> -width / 5 }
-                }
-                val exitOffset = if (movingForward) {
-                    { width: Int -> -width / 6 }
-                } else {
-                    { width: Int -> width / 6 }
-                }
-                (slideInHorizontally(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow,
-                    ),
-                    initialOffsetX = slideOffset,
-                ) + fadeIn(animationSpec = tween(220))).togetherWith(
-                    slideOutHorizontally(
-                        animationSpec = tween(180),
-                        targetOffsetX = exitOffset,
-                    ) + fadeOut(animationSpec = tween(160)),
-                )
-            },
-            label = "tabSlideTransition",
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
-        ) { currentTab ->
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                contentPadding = PaddingValues(top = 14.dp, bottom = 18.dp),
-            ) {
-                item(key = "error_alert") {
-                    TrackingErrorBanner(
-                        errorMessage = uiState.trackingError,
-                        isPermissionError = uiState.isPermissionError,
-                        onDismiss = onDismissError,
-                        onOpenSettings = { context.openAppSettings() },
-                        modifier = Modifier.widthIn(max = 560.dp),
+        ) {
+            AnimatedContent(
+                targetState = selectedTab,
+                transitionSpec = {
+                    val movingForward = targetState.index >= initialState.index
+                    val slideOffset = if (movingForward) {
+                        { width: Int -> width / 5 }
+                    } else {
+                        { width: Int -> -width / 5 }
+                    }
+                    val exitOffset = if (movingForward) {
+                        { width: Int -> -width / 6 }
+                    } else {
+                        { width: Int -> width / 6 }
+                    }
+                    (slideInHorizontally(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                        initialOffsetX = slideOffset,
+                    ) + fadeIn(animationSpec = tween(220))).togetherWith(
+                        slideOutHorizontally(
+                            animationSpec = tween(180),
+                            targetOffsetX = exitOffset,
+                        ) + fadeOut(animationSpec = tween(160)),
                     )
-                }
-
-                when (currentTab) {
-                    TrackerNavTab.TRACKER -> {
-                        item(key = "hero_progress_ring") {
-                            AnimatedCardEntrance(delayMillis = 0) {
-                                ProgressRingHeaderCard(
-                                    uiState = uiState,
-                                    modifier = Modifier.widthIn(max = 560.dp),
-                                )
-                            }
-                        }
-
-                        item(key = "live_coordinates") {
-                            AnimatedCardEntrance(delayMillis = 45) {
-                                LiveCoordinatesCard(
-                                    location = uiState.latestLocation,
-                                    isTracking = uiState.isTracking,
-                                    isAcquiringInitialFix = uiState.isAcquiringInitialFix,
-                                    modifier = Modifier.widthIn(max = 560.dp),
-                                )
-                            }
-                        }
-
-                        item(key = "sync_metrics_row") {
-                            AnimatedCardEntrance(delayMillis = 90) {
-                                SyncStatusCardsRow(
-                                    liveSyncCount = uiState.liveSyncCount,
-                                    lastLiveSyncTime = uiState.lastLiveSyncTime,
-                                    isSendingCurrent = uiState.isSendingCurrent,
-                                    historyLogCount = uiState.historyLogCount,
-                                    lastHistorySyncTime = uiState.lastHistorySyncTime,
-                                    historyCountdownSec = uiState.historyCountdownSec,
-                                    isTracking = uiState.isTracking,
-                                    modifier = Modifier.widthIn(max = 560.dp),
-                                )
-                            }
-                        }
-
-                        item(key = "status_timeline") {
-                            AnimatedCardEntrance(delayMillis = 135) {
-                                StatusTimelineCard(
-                                    session = session,
-                                    uiState = uiState,
-                                    modifier = Modifier.widthIn(max = 560.dp),
-                                )
-                            }
-                        }
-
-                        item(key = "filter_pills_home") {
-                            FilterPillsBar(
-                                selectedFilter = selectedFilter,
-                                onSelectFilter = { selectedFilter = it },
-                                modifier = Modifier.widthIn(max = 560.dp),
-                            )
-                        }
-
-                        item(key = "recent_entries_home") {
-                            RecentEntriesCard(
-                                logs = filteredLogs,
-                                hasAnyLogs = uiState.recentLogs.isNotEmpty(),
-                                maxItems = 5,
-                                modifier = Modifier.widthIn(max = 560.dp),
-                            )
-                        }
+                },
+                label = "tabSlideTransition",
+                modifier = Modifier.fillMaxSize(),
+            ) { currentTab ->
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    contentPadding = PaddingValues(top = 14.dp, bottom = 18.dp),
+                ) {
+                    item(key = "error_alert") {
+                        TrackingErrorBanner(
+                            errorMessage = uiState.trackingError,
+                            isPermissionError = uiState.isPermissionError,
+                            onDismiss = onDismissError,
+                            onOpenSettings = { context.openAppSettings() },
+                            modifier = Modifier.widthIn(max = 560.dp),
+                        )
                     }
 
-                    TrackerNavTab.ACTIVITY -> {
-                        item(key = "activity_timeline") {
-                            AnimatedCardEntrance(delayMillis = 0) {
-                                StatusTimelineCard(
-                                    session = session,
-                                    uiState = uiState,
-                                    modifier = Modifier.widthIn(max = 560.dp),
-                                )
+                    when (currentTab) {
+                        TrackerNavTab.TRACKER -> {
+                            item(key = "hero_progress_ring") {
+                                AnimatedCardEntrance(delayMillis = 0) {
+                                    ProgressRingHeaderCard(
+                                        uiState = uiState,
+                                        modifier = Modifier.widthIn(max = 560.dp),
+                                    )
+                                }
                             }
-                        }
 
-                        item(key = "activity_filter_pills") {
-                            AnimatedCardEntrance(delayMillis = 45) {
+                            item(key = "live_coordinates") {
+                                AnimatedCardEntrance(delayMillis = 45) {
+                                    LiveCoordinatesCard(
+                                        location = uiState.latestLocation,
+                                        currentSpeedKmh = uiState.currentSpeedKmh,
+                                        activeSpeedTier = uiState.activeSpeedTier,
+                                        isTracking = uiState.isTracking,
+                                        isAcquiringInitialFix = uiState.isAcquiringInitialFix,
+                                        onCopyCoordinates = copyCoordsToClipboard,
+                                        modifier = Modifier.widthIn(max = 560.dp),
+                                    )
+                                }
+                            }
+
+                            item(key = "sync_metrics_row") {
+                                AnimatedCardEntrance(delayMillis = 90) {
+                                    SyncStatusCardsRow(
+                                        liveSyncCount = uiState.liveSyncCount,
+                                        lastLiveSyncTime = uiState.lastLiveSyncTime,
+                                        isSendingCurrent = uiState.isSendingCurrent,
+                                        historyLogCount = uiState.historyLogCount,
+                                        lastHistorySyncTime = uiState.lastHistorySyncTime,
+                                        historyCountdownSec = uiState.historyCountdownSec,
+                                        activeHistoryIntervalSec = uiState.activeHistoryIntervalSec,
+                                        isTracking = uiState.isTracking,
+                                        modifier = Modifier.widthIn(max = 560.dp),
+                                    )
+                                }
+                            }
+
+                            item(key = "status_timeline") {
+                                AnimatedCardEntrance(delayMillis = 135) {
+                                    StatusTimelineCard(
+                                        session = session,
+                                        uiState = uiState,
+                                        modifier = Modifier.widthIn(max = 560.dp),
+                                    )
+                                }
+                            }
+
+                            item(key = "filter_pills_home") {
                                 FilterPillsBar(
                                     selectedFilter = selectedFilter,
                                     onSelectFilter = { selectedFilter = it },
                                     modifier = Modifier.widthIn(max = 560.dp),
                                 )
                             }
-                        }
 
-                        item(key = "activity_entries_full") {
-                            AnimatedCardEntrance(delayMillis = 90) {
+                            item(key = "recent_entries_home") {
                                 RecentEntriesCard(
                                     logs = filteredLogs,
                                     hasAnyLogs = uiState.recentLogs.isNotEmpty(),
-                                    maxItems = 15,
+                                    maxItems = 5,
+                                    onCopyCoordinates = copyCoordsToClipboard,
                                     modifier = Modifier.widthIn(max = 560.dp),
                                 )
                             }
                         }
-                    }
 
-                    TrackerNavTab.ACCOUNT -> {
-                        item(key = "account_content") {
-                            AnimatedCardEntrance(delayMillis = 0) {
-                                AccountTabContent(
-                                    session = session,
-                                    profileImagePath = uiState.profileImagePath,
-                                    profileImageVersion = uiState.profileImageVersion,
-                                    isUpdatingAvatar = uiState.isUpdatingAvatar,
-                                    themeMode = uiState.themeMode,
-                                    accentTheme = uiState.accentTheme,
-                                    hasPermission = hasLocationPermission(),
-                                    isWakeLockActive = uiState.isWakeLockActive,
-                                    onSelectThemeMode = onSelectThemeMode,
-                                    onSelectAccentTheme = onSelectAccentTheme,
-                                    onPickProfileImage = onPickProfileImage,
-                                    onRemoveProfileImage = onRemoveProfileImage,
-                                    onOpenSettings = { context.openAppSettings() },
-                                    onLogout = onLogout,
-                                    modifier = Modifier.widthIn(max = 560.dp),
-                                )
+                        TrackerNavTab.ACTIVITY -> {
+                            item(key = "activity_timeline") {
+                                AnimatedCardEntrance(delayMillis = 0) {
+                                    StatusTimelineCard(
+                                        session = session,
+                                        uiState = uiState,
+                                        modifier = Modifier.widthIn(max = 560.dp),
+                                    )
+                                }
+                            }
+
+                            item(key = "activity_filter_pills") {
+                                AnimatedCardEntrance(delayMillis = 45) {
+                                    FilterPillsBar(
+                                        selectedFilter = selectedFilter,
+                                        onSelectFilter = { selectedFilter = it },
+                                        modifier = Modifier.widthIn(max = 560.dp),
+                                    )
+                                }
+                            }
+
+                            item(key = "activity_entries_full") {
+                                AnimatedCardEntrance(delayMillis = 90) {
+                                    RecentEntriesCard(
+                                        logs = filteredLogs,
+                                        hasAnyLogs = uiState.recentLogs.isNotEmpty(),
+                                        maxItems = 15,
+                                        onCopyCoordinates = copyCoordsToClipboard,
+                                        modifier = Modifier.widthIn(max = 560.dp),
+                                    )
+                                }
+                            }
+                        }
+
+                        TrackerNavTab.ACCOUNT -> {
+                            item(key = "account_content") {
+                                AnimatedCardEntrance(delayMillis = 0) {
+                                    AccountTabContent(
+                                        session = session,
+                                        profileImagePath = uiState.profileImagePath,
+                                        profileImageVersion = uiState.profileImageVersion,
+                                        isUpdatingAvatar = uiState.isUpdatingAvatar,
+                                        themeMode = uiState.themeMode,
+                                        accentTheme = uiState.accentTheme,
+                                        historySyncMode = uiState.historySyncMode,
+                                        currentSpeedKmh = uiState.currentSpeedKmh,
+                                        activeSpeedTier = uiState.activeSpeedTier,
+                                        hasPermission = hasLocationPermission(),
+                                        isTracking = uiState.isTracking,
+                                        isWakeLockActive = uiState.isWakeLockActive,
+                                        onSelectThemeMode = onSelectThemeMode,
+                                        onSelectAccentTheme = onSelectAccentTheme,
+                                        onSelectHistorySyncMode = { mode ->
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            onSelectHistorySyncMode(mode)
+                                            toastMessage = if (mode == HistorySyncMode.SPEED_ADAPTIVE) {
+                                                speedAutoLabel
+                                            } else {
+                                                speedFixedLabel
+                                            }
+                                        },
+                                        onPickProfileImage = onPickProfileImage,
+                                        onRemoveProfileImage = onRemoveProfileImage,
+                                        onOpenSettings = { context.openAppSettings() },
+                                        onLogout = { showLogoutSheet = true },
+                                        modifier = Modifier.widthIn(max = 560.dp),
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
+
+            // Sleek floating confirmation toast pill
+            FloatingToastPill(
+                message = toastMessage,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 12.dp, start = 20.dp, end = 20.dp),
+            )
         }
     }
 }
@@ -509,7 +620,7 @@ private fun CleanTopAppBar(
                         Text(
                             text = "${stringResource(R.string.user_id_prefix)}: ${session.userId}",
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Medium,
                             ),
                             color = telemetryColors.mutedText,
                             maxLines = 1,
@@ -609,9 +720,11 @@ private fun ProgressRingHeaderCard(
 ) {
     val telemetryColors = LocalTelemetryColors.current
     val totalSyncs = uiState.liveSyncCount + uiState.historyLogCount
+    val cycleSec = uiState.activeHistoryIntervalSec.coerceAtLeast(1)
 
     val targetFraction = if (uiState.isTracking) {
-        ((60 - uiState.historyCountdownSec.coerceIn(0, 60)) / 60f).coerceIn(0.04f, 1f)
+        ((cycleSec - uiState.historyCountdownSec.coerceIn(0, cycleSec)) / cycleSec.toFloat())
+            .coerceIn(0.04f, 1f)
     } else {
         0f
     }
@@ -697,16 +810,16 @@ private fun ProgressRingHeaderCard(
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     AnimatedRollingNumber(
-                        value = if (uiState.isTracking) "${uiState.historyCountdownSec}s" else "60s",
+                        value = if (uiState.isTracking) "${uiState.historyCountdownSec}s" else "${cycleSec}s",
                         style = MaterialTheme.typography.headlineSmall.copy(
-                            fontFamily = JetBrainsMonoFontFamily,
                             fontWeight = FontWeight.Bold,
+                            fontFeatureSettings = "tnum",
                         ),
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.testTag("progress_ring_countdown"),
                     )
                     Text(
-                        text = "1m cycle",
+                        text = "${cycleSec}s cycle",
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                         color = telemetryColors.mutedText,
                     )
@@ -725,10 +838,13 @@ private fun ProgressRingHeaderCard(
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    text = if (uiState.isTracking) {
-                        stringResource(R.string.header_cycle_subtitle_active)
-                    } else {
-                        stringResource(R.string.header_cycle_subtitle_idle)
+                    text = when {
+                        uiState.isTracking && uiState.historySyncMode == HistorySyncMode.SPEED_ADAPTIVE ->
+                            "Live every 2s · ${uiState.activeSpeedTier.label} (${cycleSec}s history)"
+                        uiState.isTracking ->
+                            stringResource(R.string.header_cycle_subtitle_active)
+                        else ->
+                            stringResource(R.string.header_cycle_subtitle_idle)
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -738,7 +854,7 @@ private fun ProgressRingHeaderCard(
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
@@ -747,35 +863,53 @@ private fun ProgressRingHeaderCard(
                         Text(
                             text = "${stringResource(R.string.header_total_packets)}: $totalSyncs",
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = JetBrainsMonoFontFamily,
                                 fontWeight = FontWeight.SemiBold,
+                                fontFeatureSettings = "tnum",
                             ),
                             color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            softWrap = false,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         )
                     }
 
-                    if (uiState.latestLocation != null) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (uiState.latestLocation.accuracyMeters <= 25f) {
-                                telemetryColors.liveGreenContainer
-                            } else {
-                                telemetryColors.countdownAmberContainer
-                            },
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (uiState.isTracking) {
+                            telemetryColors.liveGreenContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainer
+                        },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
-                            Text(
-                                text = "±${uiState.latestLocation.accuracyMeters.roundToInt()}m",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = JetBrainsMonoFontFamily,
-                                    fontWeight = FontWeight.SemiBold,
-                                ),
-                                color = if (uiState.latestLocation.accuracyMeters <= 25f) {
+                            Icon(
+                                imageVector = Icons.Filled.Speed,
+                                contentDescription = null,
+                                tint = if (uiState.isTracking) {
                                     telemetryColors.liveGreenText
                                 } else {
-                                    telemetryColors.countdownAmberText
+                                    telemetryColors.mutedText
                                 },
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.size(12.dp),
+                            )
+                            Text(
+                                text = "${uiState.currentSpeedKmh.roundToInt()} km/h",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFeatureSettings = "tnum",
+                                ),
+                                color = if (uiState.isTracking) {
+                                    telemetryColors.liveGreenText
+                                } else {
+                                    telemetryColors.mutedText
+                                },
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.testTag("header_speed_pill"),
                             )
                         }
                     }
@@ -813,15 +947,20 @@ private fun AnimatedRollingNumber(
 @Composable
 private fun LiveCoordinatesCard(
     location: GpsLocation?,
+    currentSpeedKmh: Float,
+    activeSpeedTier: SpeedHistoryTier,
     isTracking: Boolean,
     isAcquiringInitialFix: Boolean,
+    onCopyCoordinates: (Double, Double) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val telemetryColors = LocalTelemetryColors.current
+    val showShimmer = (isAcquiringInitialFix || isTracking) && location == null
 
     val latFormatted = location?.let { String.format(Locale.US, "%.6f°", it.latitude) } ?: "--.------°"
     val lngFormatted = location?.let { String.format(Locale.US, "%.6f°", it.longitude) } ?: "--.------°"
     val accFormatted = location?.let { "±${it.accuracyMeters.roundToInt()}m" } ?: "±--m"
+    val speedRounded = currentSpeedKmh.roundToInt()
 
     val (badgeText, badgeDot, badgeBg, badgeFg) = when {
         isTracking -> Quadruple(
@@ -889,13 +1028,47 @@ private fun LiveCoordinatesCard(
                     )
                 }
 
-                StatusPillBadge(
-                    label = badgeText,
-                    dotColor = badgeDot,
-                    bgColor = badgeBg,
-                    textColor = badgeFg,
-                    isPulsing = isTracking || isAcquiringInitialFix,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (location != null) {
+                        Surface(
+                            onClick = { onCopyCoordinates(location.latitude, location.longitude) },
+                            shape = CircleShape,
+                            color = telemetryColors.accentContainer,
+                            modifier = Modifier.testTag("copy_coordinates_button"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.ContentCopy,
+                                    contentDescription = stringResource(R.string.cd_copy_coords),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(12.dp),
+                                )
+                                Text(
+                                    text = stringResource(R.string.action_copy_coords),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.SemiBold,
+                                    ),
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+
+                    StatusPillBadge(
+                        label = badgeText,
+                        dotColor = badgeDot,
+                        bgColor = badgeBg,
+                        textColor = badgeFg,
+                        isPulsing = isTracking || isAcquiringInitialFix,
+                    )
+                }
             }
 
             Row(
@@ -905,6 +1078,8 @@ private fun LiveCoordinatesCard(
                 CoordinateTile(
                     label = stringResource(R.string.label_latitude),
                     value = latFormatted,
+                    isLoading = showShimmer,
+                    onClick = location?.let { loc -> { onCopyCoordinates(loc.latitude, loc.longitude) } },
                     modifier = Modifier
                         .weight(1f)
                         .testTag("latitude_value"),
@@ -912,10 +1087,86 @@ private fun LiveCoordinatesCard(
                 CoordinateTile(
                     label = stringResource(R.string.label_longitude),
                     value = lngFormatted,
+                    isLoading = showShimmer,
+                    onClick = location?.let { loc -> { onCopyCoordinates(loc.latitude, loc.longitude) } },
                     modifier = Modifier
                         .weight(1f)
                         .testTag("longitude_value"),
                 )
+            }
+
+            // Live Speed telemetry strip
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.background,
+                border = BorderStroke(1.dp, telemetryColors.cardBorder),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Speed,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.label_current_speed),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Surface(
+                            shape = CircleShape,
+                            color = if (isTracking) {
+                                telemetryColors.accentContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainer
+                            },
+                        ) {
+                            Text(
+                                text = activeSpeedTier.label,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                color = if (isTracking) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    telemetryColors.mutedText
+                                },
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+
+                    if (showShimmer) {
+                        ShimmerBar(widthFraction = 0.25f, height = 16.dp)
+                    } else {
+                        AnimatedRollingNumber(
+                            value = "$speedRounded km/h",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontFeatureSettings = "tnum",
+                            ),
+                            color = if (isTracking) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                telemetryColors.mutedText
+                            },
+                            modifier = Modifier.testTag("main_live_speed_value"),
+                        )
+                    }
+                }
             }
 
             Surface(
@@ -931,28 +1182,39 @@ private fun LiveCoordinatesCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = stringResource(R.string.label_accuracy),
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontWeight = FontWeight.Medium,
-                        ),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = accFormatted,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontFamily = JetBrainsMonoFontFamily,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        color = if (location != null && location.accuracyMeters <= 25f) {
-                            telemetryColors.liveGreenText
-                        } else if (location != null) {
-                            telemetryColors.countdownAmberText
-                        } else {
-                            telemetryColors.mutedText
-                        },
-                        modifier = Modifier.testTag("gps_accuracy_value"),
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.label_accuracy),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        GpsSignalBars(accuracyMeters = location?.accuracyMeters)
+                    }
+
+                    if (showShimmer) {
+                        ShimmerBar(widthFraction = 0.25f, height = 16.dp)
+                    } else {
+                        Text(
+                            text = accFormatted,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontFeatureSettings = "tnum",
+                            ),
+                            color = if (location != null && location.accuracyMeters <= 25f) {
+                                telemetryColors.liveGreenText
+                            } else if (location != null) {
+                                telemetryColors.countdownAmberText
+                            } else {
+                                telemetryColors.mutedText
+                            },
+                            modifier = Modifier.testTag("gps_accuracy_value"),
+                        )
+                    }
                 }
             }
         }
@@ -963,6 +1225,8 @@ private fun LiveCoordinatesCard(
 private fun CoordinateTile(
     label: String,
     value: String,
+    isLoading: Boolean,
+    onClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val telemetryColors = LocalTelemetryColors.current
@@ -971,28 +1235,36 @@ private fun CoordinateTile(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.background,
         border = BorderStroke(1.dp, telemetryColors.cardBorder),
-        modifier = modifier,
+        modifier = if (onClick != null) {
+            modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick)
+        } else {
+            modifier
+        },
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                 color = telemetryColors.mutedText,
             )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontFamily = JetBrainsMonoFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                ),
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            if (isLoading) {
+                ShimmerBar(widthFraction = 0.85f, height = 18.dp)
+            } else {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        fontFeatureSettings = "tnum",
+                    ),
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -1005,15 +1277,33 @@ private fun SyncStatusCardsRow(
     historyLogCount: Int,
     lastHistorySyncTime: String?,
     historyCountdownSec: Int,
+    activeHistoryIntervalSec: Int,
     isTracking: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val telemetryColors = LocalTelemetryColors.current
+    val cycleSec = activeHistoryIntervalSec.coerceAtLeast(1)
     val countdownProgress by animateFloatAsState(
-        targetValue = if (isTracking) (historyCountdownSec.coerceIn(0, 60) / 60f) else 1f,
+        targetValue = if (isTracking) (historyCountdownSec.coerceIn(0, cycleSec) / cycleSec.toFloat()) else 1f,
         animationSpec = tween(durationMillis = 450),
         label = "historyCardBarProgress",
     )
+
+    // Sync Heartbeat ripple glow whenever a Live Sync (2s) packet succeeds
+    val syncHeartbeat = remember { Animatable(0f) }
+    LaunchedEffect(liveSyncCount) {
+        if (liveSyncCount > 0) {
+            syncHeartbeat.snapTo(1f)
+            syncHeartbeat.animateTo(0f, tween(durationMillis = 680, easing = FastOutSlowInEasing))
+        }
+    }
+
+    val liveCardBorderColor = lerp(
+        telemetryColors.cardBorder,
+        telemetryColors.liveGreen,
+        syncHeartbeat.value,
+    )
+    val liveCardBorderWidth = (1f + syncHeartbeat.value * 1.2f).dp
 
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -1022,8 +1312,8 @@ private fun SyncStatusCardsRow(
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, telemetryColors.cardBorder),
-            shadowElevation = 3.dp,
+            border = BorderStroke(liveCardBorderWidth, liveCardBorderColor),
+            shadowElevation = (3f + syncHeartbeat.value * 3f).dp,
             modifier = Modifier
                 .weight(1f)
                 .testTag("live_sync_card"),
@@ -1040,7 +1330,9 @@ private fun SyncStatusCardsRow(
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = telemetryColors.liveGreenContainer,
-                        modifier = Modifier.size(34.dp),
+                        modifier = Modifier
+                            .size(34.dp)
+                            .scale(1f + syncHeartbeat.value * 0.08f),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
@@ -1074,8 +1366,8 @@ private fun SyncStatusCardsRow(
                 AnimatedRollingNumber(
                     value = liveSyncCount.toString(),
                     style = MaterialTheme.typography.displaySmall.copy(
-                        fontFamily = JetBrainsMonoFontFamily,
                         fontWeight = FontWeight.Bold,
+                        fontFeatureSettings = "tnum",
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.testTag("live_sync_count"),
@@ -1094,8 +1386,8 @@ private fun SyncStatusCardsRow(
                     Text(
                         text = lastLiveSyncTime ?: stringResource(R.string.label_never_synced),
                         style = MaterialTheme.typography.bodyMedium.copy(
-                            fontFamily = JetBrainsMonoFontFamily,
                             fontWeight = FontWeight.SemiBold,
+                            fontFeatureSettings = "tnum",
                         ),
                         color = telemetryColors.liveGreenText,
                         modifier = Modifier.testTag("live_sync_last_time"),
@@ -1142,10 +1434,10 @@ private fun SyncStatusCardsRow(
                         color = telemetryColors.countdownAmberContainer,
                     ) {
                         Text(
-                            text = if (isTracking) "${historyCountdownSec}s" else "60s",
+                            text = if (isTracking) "${historyCountdownSec}s" else "${cycleSec}s",
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = JetBrainsMonoFontFamily,
                                 fontWeight = FontWeight.Bold,
+                                fontFeatureSettings = "tnum",
                             ),
                             color = telemetryColors.countdownAmberText,
                             modifier = Modifier
@@ -1156,7 +1448,7 @@ private fun SyncStatusCardsRow(
                 }
 
                 Text(
-                    text = stringResource(R.string.card_history_log_title),
+                    text = "History (${cycleSec}s)",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1164,8 +1456,8 @@ private fun SyncStatusCardsRow(
                 AnimatedRollingNumber(
                     value = historyLogCount.toString(),
                     style = MaterialTheme.typography.displaySmall.copy(
-                        fontFamily = JetBrainsMonoFontFamily,
                         fontWeight = FontWeight.Bold,
+                        fontFeatureSettings = "tnum",
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.testTag("history_log_count"),
@@ -1185,7 +1477,7 @@ private fun SyncStatusCardsRow(
                         Text(
                             text = lastHistorySyncTime ?: stringResource(R.string.label_never_synced),
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = JetBrainsMonoFontFamily,
+                                fontFeatureSettings = "tnum",
                             ),
                             color = telemetryColors.countdownAmberText,
                         )
@@ -1282,16 +1574,18 @@ private fun StatusTimelineCard(
         TimelineStage(
             title = stringResource(R.string.timeline_step_history_title),
             subtitle = if (uiState.isTracking) {
-                "${uiState.historyLogCount} logged · Next in ${uiState.historyCountdownSec}s"
+                "${uiState.historyLogCount} logged · ${uiState.activeSpeedTier.label} (${uiState.activeHistoryIntervalSec}s)"
             } else if (uiState.historyLogCount > 0) {
                 "${uiState.historyLogCount} logged · Last ${uiState.lastHistorySyncTime ?: "--:--:--"}"
+            } else if (uiState.historySyncMode == HistorySyncMode.SPEED_ADAPTIVE) {
+                "Speed-adaptive (15s–120s) while tracking"
             } else {
                 "Uploads every 60s while tracking"
             },
             isCompleted = uiState.historyLogCount > 0,
             isActive = uiState.isTracking,
             accentColor = telemetryColors.countdownAmber,
-            badgeText = if (uiState.isTracking) "${uiState.historyCountdownSec}s" else "1m",
+            badgeText = if (uiState.isTracking) "${uiState.historyCountdownSec}s" else "${uiState.activeHistoryIntervalSec}s",
             badgeBg = if (uiState.isTracking) {
                 telemetryColors.countdownAmberContainer
             } else {
@@ -1517,9 +1811,11 @@ private fun RecentEntriesCard(
     logs: List<SyncLogEntry>,
     hasAnyLogs: Boolean,
     maxItems: Int,
+    onCopyCoordinates: (Double, Double) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val telemetryColors = LocalTelemetryColors.current
+    var expandedEntryId by remember { mutableStateOf<Long?>(null) }
 
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -1532,7 +1828,7 @@ private fun RecentEntriesCard(
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1549,8 +1845,8 @@ private fun RecentEntriesCard(
                 Text(
                     text = "${logs.size}",
                     style = MaterialTheme.typography.labelSmall.copy(
-                        fontFamily = JetBrainsMonoFontFamily,
                         fontWeight = FontWeight.SemiBold,
+                        fontFeatureSettings = "tnum",
                     ),
                     color = telemetryColors.mutedText,
                 )
@@ -1589,70 +1885,178 @@ private fun RecentEntriesCard(
                     if (index > 0) {
                         HorizontalDivider(color = telemetryColors.cardBorder)
                     }
-                    Row(
+                    val isExpanded = expandedEntryId == log.id
+                    val chevronRotation by animateFloatAsState(
+                        targetValue = if (isExpanded) 180f else 0f,
+                        animationSpec = tween(220),
+                        label = "chevronRot_${log.id}",
+                    )
+
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                expandedEntryId = if (isExpanded) null else log.id
+                            }
+                            .padding(vertical = 6.dp, horizontal = 2.dp),
                     ) {
-                        Icon(
-                            imageVector = if (log.success) {
-                                Icons.Filled.CheckCircle
-                            } else {
-                                Icons.Filled.ErrorOutline
-                            },
-                            contentDescription = null,
-                            tint = when {
-                                !log.success -> telemetryColors.stopRed
-                                log.type == SyncType.HISTORY -> telemetryColors.countdownAmber
-                                else -> telemetryColors.liveGreen
-                            },
-                            modifier = Modifier.size(18.dp),
-                        )
-
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = when {
-                                !log.success -> telemetryColors.stopRedContainer
-                                log.type == SyncType.HISTORY -> telemetryColors.countdownAmberContainer
-                                else -> telemetryColors.liveGreenContainer
-                            },
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(
-                                text = if (log.type == SyncType.HISTORY) "HIST" else "LIVE",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = JetBrainsMonoFontFamily,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                ),
-                                color = when {
-                                    !log.success -> telemetryColors.stopRedText
-                                    log.type == SyncType.HISTORY -> telemetryColors.countdownAmberText
-                                    else -> telemetryColors.liveGreenText
+                            Icon(
+                                imageVector = if (log.success) {
+                                    Icons.Filled.CheckCircle
+                                } else {
+                                    Icons.Filled.ErrorOutline
                                 },
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                contentDescription = null,
+                                tint = when {
+                                    !log.success -> telemetryColors.stopRed
+                                    log.type == SyncType.HISTORY -> telemetryColors.countdownAmber
+                                    else -> telemetryColors.liveGreen
+                                },
+                                modifier = Modifier.size(18.dp),
+                            )
+
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = when {
+                                    !log.success -> telemetryColors.stopRedContainer
+                                    log.type == SyncType.HISTORY -> telemetryColors.countdownAmberContainer
+                                    else -> telemetryColors.liveGreenContainer
+                                },
+                            ) {
+                                Text(
+                                    text = if (log.type == SyncType.HISTORY) "HIST" else "LIVE",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    ),
+                                    color = when {
+                                        !log.success -> telemetryColors.stopRedText
+                                        log.type == SyncType.HISTORY -> telemetryColors.countdownAmberText
+                                        else -> telemetryColors.liveGreenText
+                                    },
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                )
+                            }
+
+                            Text(
+                                text = log.message,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontWeight = FontWeight.Medium,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+
+                            Text(
+                                text = log.timestampFormatted,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFeatureSettings = "tnum",
+                                ),
+                                color = telemetryColors.mutedText,
+                            )
+
+                            Icon(
+                                imageVector = Icons.Filled.ExpandMore,
+                                contentDescription = stringResource(R.string.cd_expand_entry),
+                                tint = telemetryColors.mutedText,
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .rotate(chevronRotation),
                             )
                         }
 
-                        Text(
-                            text = log.message,
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontWeight = FontWeight.Medium,
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
+                        AnimatedVisibility(
+                            visible = isExpanded,
+                            enter = expandVertically(tween(200)) + fadeIn(tween(180)),
+                            exit = shrinkVertically(tween(180)) + fadeOut(tween(140)),
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.background,
+                                border = BorderStroke(1.dp, telemetryColors.cardBorder),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                                    ) {
+                                        val coordLine = if (log.latitude != null && log.longitude != null) {
+                                            String.format(Locale.US, "%.6f°, %.6f°", log.latitude, log.longitude)
+                                        } else {
+                                            "No coordinate snapshot"
+                                        }
+                                        Text(
+                                            text = coordLine,
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontFeatureSettings = "tnum",
+                                            ),
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                        val detailMeta = buildString {
+                                            append("Payload: ")
+                                            append(if (log.type == SyncType.HISTORY) "history" else "current")
+                                            if (log.speedKmh != null) {
+                                                append(" · ${log.speedKmh.roundToInt()} km/h")
+                                            }
+                                            if (log.accuracyMeters != null) {
+                                                append(" · ±${log.accuracyMeters.roundToInt()}m")
+                                            }
+                                        }
+                                        Text(
+                                            text = detailMeta,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
 
-                        Text(
-                            text = log.timestampFormatted,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = JetBrainsMonoFontFamily,
-                            ),
-                            color = telemetryColors.mutedText,
-                        )
+                                    if (log.latitude != null && log.longitude != null) {
+                                        Surface(
+                                            onClick = { onCopyCoordinates(log.latitude, log.longitude) },
+                                            shape = CircleShape,
+                                            color = telemetryColors.accentContainer,
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.ContentCopy,
+                                                    contentDescription = stringResource(R.string.cd_copy_coords),
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(12.dp),
+                                                )
+                                                Text(
+                                                    text = stringResource(R.string.action_copy_coords),
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        fontWeight = FontWeight.SemiBold,
+                                                    ),
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1764,11 +2168,6 @@ private fun ThumbZoneActionBar(
         ),
         label = "ctaPressScale",
     )
-    val buttonColor by animateColorAsState(
-        targetValue = if (isTracking) telemetryColors.stopRed else MaterialTheme.colorScheme.primary,
-        animationSpec = tween(260),
-        label = "ctaColorMorph",
-    )
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -1783,67 +2182,67 @@ private fun ThumbZoneActionBar(
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Button(
-                    onClick = if (isTracking) onStopClick else onStartClick,
-                    enabled = isTracking || !isAcquiringInitialFix,
-                    interactionSource = interactionSource,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = buttonColor,
-                        contentColor = Color.White,
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 560.dp)
-                        .height(52.dp)
-                        .scale(pressScale)
-                        .testTag(if (isTracking) "stop_tracking_button" else "start_tracking_button"),
-                ) {
-                    if (isTracking) {
-                        Icon(
-                            imageVector = Icons.Filled.StopCircle,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = stringResource(R.string.action_stop_tracking),
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                            ),
-                            maxLines = 1,
-                        )
-                    } else if (isAcquiringInitialFix) {
-                        CircularProgressIndicator(
-                            strokeWidth = 2.5.dp,
-                            color = Color.White,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = stringResource(R.string.action_starting_tracking),
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.SemiBold,
-                            ),
-                            maxLines = 1,
+                AnimatedContent(
+                    targetState = isTracking,
+                    transitionSpec = {
+                        fadeIn(tween(220)).togetherWith(fadeOut(tween(180)))
+                    },
+                    label = "thumbActionTransition",
+                ) { trackingActive ->
+                    if (trackingActive) {
+                        SlideToStopTrack(
+                            onStopConfirmed = onStopClick,
+                            modifier = Modifier.widthIn(max = 560.dp),
                         )
                     } else {
-                        Icon(
-                            imageVector = Icons.Filled.RadioButtonChecked,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = stringResource(R.string.action_start_tracking),
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 15.sp,
+                        Button(
+                            onClick = onStartClick,
+                            enabled = !isAcquiringInitialFix,
+                            interactionSource = interactionSource,
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = Color.White,
                             ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .widthIn(max = 560.dp)
+                                .height(56.dp)
+                                .scale(pressScale)
+                                .testTag("start_tracking_button"),
+                        ) {
+                            if (isAcquiringInitialFix) {
+                                CircularProgressIndicator(
+                                    strokeWidth = 2.5.dp,
+                                    color = Color.White,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = stringResource(R.string.action_starting_tracking),
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontWeight = FontWeight.SemiBold,
+                                    ),
+                                    maxLines = 1,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Filled.RadioButtonChecked,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = stringResource(R.string.action_start_tracking),
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 15.sp,
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
                     }
                 }
             }

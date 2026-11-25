@@ -9,38 +9,31 @@ import com.example.data.location.LocationTrackerClient
 import com.example.data.model.AppAccentTheme
 import com.example.data.model.AppThemeMode
 import com.example.data.model.GpsLocation
+import com.example.data.model.HistorySyncMode
+import com.example.data.model.SpeedHistoryTier
 import com.example.data.model.SyncLogEntry
-import com.example.data.model.SyncType
 import com.example.data.model.UserSession
 import com.example.data.model.ZohoAuthResult
-import com.example.data.model.ZohoPostResult
 import com.example.data.network.ZohoTrackerApi
 import com.example.data.session.SessionStore
+import com.example.service.LocationTrackingService
+import com.example.service.TrackingStateHolder
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.ceil
-import kotlin.math.max
 
 data class TrackerUiState(
     val isLoadingSession: Boolean = true,
     val session: UserSession? = null,
     val themeMode: AppThemeMode = AppThemeMode.LIGHT,
     val accentTheme: AppAccentTheme = AppAccentTheme.INDIGO,
+    val historySyncMode: HistorySyncMode = HistorySyncMode.SPEED_ADAPTIVE,
     val profileImagePath: String? = null,
     val profileImageVersion: Long = 0L,
     val isUpdatingAvatar: Boolean = false,
@@ -51,12 +44,15 @@ data class TrackerUiState(
     val isAcquiringInitialFix: Boolean = false,
     val isWakeLockActive: Boolean = false,
     val latestLocation: GpsLocation? = null,
+    val currentSpeedKmh: Float = 0f,
+    val activeSpeedTier: SpeedHistoryTier = SpeedHistoryTier.STATIONARY,
+    val activeHistoryIntervalSec: Int = 120,
     val liveSyncCount: Int = 0,
     val lastLiveSyncTime: String? = null,
     val isSendingCurrent: Boolean = false,
     val historyLogCount: Int = 0,
     val lastHistorySyncTime: String? = null,
-    val historyCountdownSec: Int = 60,
+    val historyCountdownSec: Int = 120,
     val trackingError: String? = null,
     val isPermissionError: Boolean = false,
     val recentLogs: List<SyncLogEntry> = emptyList(),
@@ -71,25 +67,6 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
 
     private val _uiState = MutableStateFlow(TrackerUiState())
     val uiState: StateFlow<TrackerUiState> = _uiState.asStateFlow()
-
-    @Volatile
-    private var lastCurrentSentAt: Long = 0L
-
-    @Volatile
-    private var lastHistorySentAt: Long = 0L
-
-    private val isSendingCurrentLock = AtomicBoolean(false)
-    private val isSendingHistoryLock = AtomicBoolean(false)
-
-    @Volatile
-    private var latestCoordsRef: GpsLocation? = null
-
-    private var locationStreamJob: Job? = null
-    private var schedulerJob: Job? = null
-    private var initialFixJob: Job? = null
-
-    private val logIdSequence = AtomicLong(0L)
-    private val timeFormatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
     init {
         viewModelScope.launch {
@@ -107,12 +84,72 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
             sessionStore.preferencesFlow.collect { prefs ->
                 val validPath = prefs.profileImagePath?.takeIf { File(it).exists() }
                 _uiState.update { state ->
+                    val resolvedInterval = when (prefs.historySyncMode) {
+                        HistorySyncMode.SPEED_ADAPTIVE -> state.activeSpeedTier.intervalSeconds
+                        HistorySyncMode.FIXED_60S -> 60
+                    }
                     state.copy(
                         themeMode = prefs.themeMode,
                         accentTheme = prefs.accentTheme,
+                        historySyncMode = prefs.historySyncMode,
                         profileImagePath = validPath,
                         profileImageVersion = prefs.profileImageVersion,
+                        activeHistoryIntervalSec = if (state.isTracking) state.activeHistoryIntervalSec else resolvedInterval,
+                        historyCountdownSec = if (state.isTracking) state.historyCountdownSec else resolvedInterval,
                     )
+                }
+            }
+        }
+
+        // Observe live foreground-service state so closing and reopening the app
+        // seamlessly restores active tracking telemetry, speed tier, counts, countdown, and logs.
+        viewModelScope.launch {
+            TrackingStateHolder.state.collect { runtime ->
+                _uiState.update { state ->
+                    val resolvedInterval = if (runtime.isTracking) {
+                        runtime.activeHistoryIntervalSec
+                    } else {
+                        when (state.historySyncMode) {
+                            HistorySyncMode.SPEED_ADAPTIVE -> runtime.activeSpeedTier.intervalSeconds
+                            HistorySyncMode.FIXED_60S -> 60
+                        }
+                    }
+                    state.copy(
+                        isTracking = runtime.isTracking,
+                        isAcquiringInitialFix = runtime.isAcquiringInitialFix,
+                        isWakeLockActive = runtime.isWakeLockActive,
+                        latestLocation = runtime.latestLocation,
+                        currentSpeedKmh = runtime.currentSpeedKmh,
+                        activeSpeedTier = runtime.activeSpeedTier,
+                        activeHistoryIntervalSec = resolvedInterval,
+                        liveSyncCount = runtime.liveSyncCount,
+                        lastLiveSyncTime = runtime.lastLiveSyncTime,
+                        isSendingCurrent = runtime.isSendingCurrent,
+                        historyLogCount = runtime.historyLogCount,
+                        lastHistorySyncTime = runtime.lastHistorySyncTime,
+                        historyCountdownSec = if (runtime.isTracking) runtime.historyCountdownSec else resolvedInterval,
+                        trackingError = runtime.trackingError,
+                        isPermissionError = runtime.isPermissionError,
+                        recentLogs = runtime.recentLogs,
+                    )
+                }
+            }
+        }
+
+        // If tracking was previously active and the OS reclaimed the process,
+        // automatically resume the foreground service as soon as the app opens.
+        viewModelScope.launch {
+            val wasTracking = sessionStore.isTrackingPersistedFlow.first()
+            val runtime = TrackingStateHolder.state.value
+            if (wasTracking && !runtime.isTracking && !runtime.isAcquiringInitialFix) {
+                val userId = sessionStore.activeTrackingUserIdFlow.first()
+                    ?: sessionStore.sessionFlow.first()?.userId
+                if (
+                    !userId.isNullOrBlank() &&
+                    locationClient.hasLocationPermission() &&
+                    locationClient.isLocationEnabled()
+                ) {
+                    LocationTrackingService.start(appContext, userId)
                 }
             }
         }
@@ -136,10 +173,23 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /**
-     * Copies the selected image from Photo Picker (Gallery) or SAF (Google Drive / Files)
-     * into app-private storage so it persists reliably across restarts with zero storage permissions.
-     */
+    fun setHistorySyncMode(mode: HistorySyncMode) {
+        _uiState.update { state ->
+            val interval = when (mode) {
+                HistorySyncMode.SPEED_ADAPTIVE -> state.activeSpeedTier.intervalSeconds
+                HistorySyncMode.FIXED_60S -> 60
+            }
+            state.copy(
+                historySyncMode = mode,
+                activeHistoryIntervalSec = interval,
+                historyCountdownSec = if (state.isTracking) state.historyCountdownSec.coerceAtMost(interval) else interval,
+            )
+        }
+        viewModelScope.launch {
+            sessionStore.saveHistorySyncMode(mode)
+        }
+    }
+
     fun saveProfileImageFromUri(uri: Uri) {
         viewModelScope.launch {
             _uiState.update { it.copy(isUpdatingAvatar = true) }
@@ -170,13 +220,11 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
             } else {
-                _uiState.update {
-                    it.copy(
-                        isUpdatingAvatar = false,
-                        trackingError = "Could not load the selected image. Please try another photo.",
-                        isPermissionError = false,
-                    )
-                }
+                _uiState.update { it.copy(isUpdatingAvatar = false) }
+                TrackingStateHolder.reportError(
+                    message = "Could not load the selected image. Please try another photo.",
+                    isPermissionIssue = false,
+                )
             }
         }
     }
@@ -222,6 +270,7 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
                         )
                     }
                 }
+
                 is ZohoAuthResult.Error -> {
                     _uiState.update {
                         it.copy(
@@ -245,7 +294,8 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
 
     fun startTrackingWithPermission() {
         val currentSession = _uiState.value.session ?: return
-        if (_uiState.value.isTracking || _uiState.value.isAcquiringInitialFix) return
+        val runtime = TrackingStateHolder.state.value
+        if (runtime.isTracking || runtime.isAcquiringInitialFix) return
 
         if (!locationClient.hasLocationPermission()) {
             onPermissionDenied()
@@ -253,237 +303,35 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
         }
 
         if (!locationClient.isLocationEnabled()) {
-            _uiState.update {
-                it.copy(
-                    trackingError = "Device GPS is turned off. Enable Location Services in Android Settings and try again.",
-                    isPermissionError = false,
-                )
-            }
+            TrackingStateHolder.reportError(
+                message = "Device GPS is turned off. Enable Location Services in Android Settings and try again.",
+                isPermissionIssue = false,
+            )
             return
         }
 
-        initialFixJob?.cancel()
-        initialFixJob = viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    isAcquiringInitialFix = true,
-                    trackingError = null,
-                    isPermissionError = false,
-                )
-            }
-
-            val initialFix = locationClient.fetchInitialLocation(timeoutMs = 10_000L)
-            if (initialFix != null) {
-                recordLocationFix(initialFix)
-            }
-
-            lastCurrentSentAt = 0L
-            lastHistorySentAt = 0L
-            isSendingCurrentLock.set(false)
-            isSendingHistoryLock.set(false)
-
-            _uiState.update {
-                it.copy(
-                    isAcquiringInitialFix = false,
-                    isTracking = true,
-                    isWakeLockActive = true,
-                    historyCountdownSec = 60,
-                    trackingError = null,
-                )
-            }
-
-            startLocationStream()
-            startMasterSchedulerLoop(currentSession.userId)
-        }
-    }
-
-    private fun startLocationStream() {
-        locationStreamJob?.cancel()
-        locationStreamJob = viewModelScope.launch {
-            locationClient.locationUpdatesFlow()
-                .catch { throwable ->
-                    val message = if (throwable is SecurityException) {
-                        "Location permission was revoked. Tracking has been stopped."
-                    } else {
-                        "GPS stream interrupted: ${throwable.localizedMessage ?: "Unknown location error"}"
-                    }
-                    stopTracking(
-                        errorMessage = message,
-                        isPermissionIssue = throwable is SecurityException,
-                    )
-                }
-                .collect { fix ->
-                    recordLocationFix(fix)
-                }
-        }
-    }
-
-    private fun startMasterSchedulerLoop(userId: String) {
-        schedulerJob?.cancel()
-        schedulerJob = viewModelScope.launch {
-            while (isActive && _uiState.value.isTracking) {
-                val now = System.currentTimeMillis()
-                val coords = latestCoordsRef
-
-                // a) Current Location (Every 2 seconds) with in-flight lock
-                if (
-                    coords != null &&
-                    now - lastCurrentSentAt >= 2_000L &&
-                    isSendingCurrentLock.compareAndSet(false, true)
-                ) {
-                    lastCurrentSentAt = now
-                    _uiState.update { it.copy(isSendingCurrent = true) }
-                    launch {
-                        try {
-                            val result = zohoApi.postLocation(
-                                type = "current",
-                                userId = userId,
-                                latitude = coords.latitude,
-                                longitude = coords.longitude,
-                            )
-                            handleSyncResult(SyncType.CURRENT, result)
-                        } finally {
-                            isSendingCurrentLock.set(false)
-                            _uiState.update { it.copy(isSendingCurrent = false) }
-                        }
-                    }
-                }
-
-                // b) History Location (Once every 1 minute / 60 seconds)
-                if (
-                    coords != null &&
-                    now - lastHistorySentAt >= 60_000L &&
-                    isSendingHistoryLock.compareAndSet(false, true)
-                ) {
-                    lastHistorySentAt = now
-                    launch {
-                        try {
-                            val result = zohoApi.postLocation(
-                                type = "history",
-                                userId = userId,
-                                latitude = coords.latitude,
-                                longitude = coords.longitude,
-                            )
-                            handleSyncResult(SyncType.HISTORY, result)
-                        } finally {
-                            isSendingHistoryLock.set(false)
-                        }
-                    }
-                }
-
-                // c) Live countdown UI
-                val remainingSeconds = if (lastHistorySentAt == 0L) {
-                    if (coords == null) 60 else 0
-                } else {
-                    max(0, ceil((60_000L - (now - lastHistorySentAt)) / 1000.0).toInt())
-                }
-                _uiState.update { it.copy(historyCountdownSec = remainingSeconds) }
-
-                delay(1_000L)
-            }
-        }
-    }
-
-    private fun handleSyncResult(type: SyncType, result: ZohoPostResult) {
-        val nowText = formatCurrentTime()
-        when (result) {
-            is ZohoPostResult.Success -> {
-                val entry = SyncLogEntry(
-                    id = logIdSequence.incrementAndGet(),
-                    type = type,
-                    success = true,
-                    message = result.message,
-                    timestampFormatted = nowText,
-                )
-                _uiState.update { state ->
-                    when (type) {
-                        SyncType.CURRENT -> state.copy(
-                            liveSyncCount = state.liveSyncCount + 1,
-                            lastLiveSyncTime = nowText,
-                            recentLogs = (listOf(entry) + state.recentLogs).take(15),
-                        )
-                        SyncType.HISTORY -> state.copy(
-                            historyLogCount = state.historyLogCount + 1,
-                            lastHistorySyncTime = nowText,
-                            recentLogs = (listOf(entry) + state.recentLogs).take(15),
-                        )
-                    }
-                }
-            }
-            is ZohoPostResult.ZohoApiError -> {
-                val entry = SyncLogEntry(
-                    id = logIdSequence.incrementAndGet(),
-                    type = type,
-                    success = false,
-                    message = result.message,
-                    timestampFormatted = nowText,
-                )
-                _uiState.update { state ->
-                    state.copy(recentLogs = (listOf(entry) + state.recentLogs).take(15))
-                }
-                stopTracking(
-                    errorMessage = "Zoho Sync Stopped: ${result.message}",
-                    isPermissionIssue = false,
-                )
-            }
-            is ZohoPostResult.NetworkError -> {
-                val entry = SyncLogEntry(
-                    id = logIdSequence.incrementAndGet(),
-                    type = type,
-                    success = false,
-                    message = result.message,
-                    timestampFormatted = nowText,
-                )
-                _uiState.update { state ->
-                    state.copy(
-                        trackingError = "Temporary network issue: ${result.message}",
-                        isPermissionError = false,
-                        recentLogs = (listOf(entry) + state.recentLogs).take(15),
-                    )
-                }
-            }
-        }
-    }
-
-    private fun recordLocationFix(fix: GpsLocation) {
-        latestCoordsRef = fix
-        _uiState.update { state ->
-            state.copy(latestLocation = fix)
-        }
+        TrackingStateHolder.dismissError()
+        LocationTrackingService.start(appContext, currentSession.userId)
     }
 
     fun stopTracking(errorMessage: String? = null, isPermissionIssue: Boolean = false) {
-        initialFixJob?.cancel()
-        initialFixJob = null
-        locationStreamJob?.cancel()
-        locationStreamJob = null
-        schedulerJob?.cancel()
-        schedulerJob = null
-        isSendingCurrentLock.set(false)
-        isSendingHistoryLock.set(false)
-
-        _uiState.update { state ->
-            state.copy(
-                isTracking = false,
-                isAcquiringInitialFix = false,
-                isWakeLockActive = false,
-                isSendingCurrent = false,
-                historyCountdownSec = 60,
-                trackingError = errorMessage,
-                isPermissionError = isPermissionIssue,
-            )
+        LocationTrackingService.stop(appContext)
+        TrackingStateHolder.markStopped(
+            errorMessage = errorMessage,
+            isPermissionIssue = isPermissionIssue,
+        )
+        viewModelScope.launch {
+            sessionStore.saveTrackingActive(active = false, userId = null)
         }
     }
 
     fun dismissError() {
-        _uiState.update { it.copy(trackingError = null, isPermissionError = false) }
+        TrackingStateHolder.dismissError()
     }
 
     fun logout() {
-        stopTracking()
-        latestCoordsRef = null
-        lastCurrentSentAt = 0L
-        lastHistorySentAt = 0L
+        LocationTrackingService.stop(appContext)
+        TrackingStateHolder.resetOnLogout()
 
         viewModelScope.launch {
             sessionStore.clearSession()
@@ -493,21 +341,11 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
                     session = null,
                     themeMode = current.themeMode,
                     accentTheme = current.accentTheme,
+                    historySyncMode = current.historySyncMode,
                     profileImagePath = current.profileImagePath,
                     profileImageVersion = current.profileImageVersion,
                 )
             }
         }
-    }
-
-    private fun formatCurrentTime(): String = synchronized(timeFormatter) {
-        timeFormatter.format(Date())
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        initialFixJob?.cancel()
-        locationStreamJob?.cancel()
-        schedulerJob?.cancel()
     }
 }

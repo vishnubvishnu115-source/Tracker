@@ -111,10 +111,14 @@ class LocationTrackerClient(private val context: Context) {
             .setWaitForAccurateLocation(false)
             .build()
 
+        var previousLocation: Location? = null
+
         val fusedCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val loc = result.lastLocation ?: return
-                trySend(loc.toGpsLocation())
+                val gps = loc.toGpsLocation(previousLocation)
+                previousLocation = loc
+                trySend(gps)
             }
         }
 
@@ -127,7 +131,9 @@ class LocationTrackerClient(private val context: Context) {
                     // Fallback to Android LocationManager if FusedLocation is unavailable
                     if (locationManager != null && fallbackListener == null) {
                         val listener = LocationListener { loc ->
-                            trySend(loc.toGpsLocation())
+                            val gps = loc.toGpsLocation(previousLocation)
+                            previousLocation = loc
+                            trySend(gps)
                         }
                         fallbackListener = listener
                         runCatching {
@@ -171,15 +177,35 @@ class LocationTrackerClient(private val context: Context) {
         val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
         for (provider in providers) {
             val loc = runCatching { locationManager.getLastKnownLocation(provider) }.getOrNull()
-            if (loc != null) return loc.toGpsLocation()
+            if (loc != null) return loc.toGpsLocation(previous = null)
         }
         return null
     }
 
-    private fun Location.toGpsLocation(): GpsLocation = GpsLocation(
-        latitude = latitude,
-        longitude = longitude,
-        accuracyMeters = if (hasAccuracy()) accuracy else 0f,
-        timestampMs = if (time > 0L) time else System.currentTimeMillis(),
-    )
+    private fun Location.toGpsLocation(previous: Location? = null): GpsLocation {
+        val rawSpeedMps = when {
+            hasSpeed() && speed >= 0f -> speed
+            previous != null -> {
+                val deltaSec = (time - previous.time) / 1000f
+                if (deltaSec >= 0.5f && deltaSec <= 15f) {
+                    val distMeters = previous.distanceTo(this)
+                    val noiseFloor = maxOf(3f, if (hasAccuracy()) accuracy * 0.45f else 3f)
+                    if (distMeters > noiseFloor) distMeters / deltaSec else 0f
+                } else {
+                    0f
+                }
+            }
+            else -> 0f
+        }
+        // Filter minor GPS drift (< 1.5 km/h) to cleanly report 0 km/h while stationary
+        val speedKmh = (rawSpeedMps * 3.6f).let { if (it < 1.5f) 0f else it }
+
+        return GpsLocation(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = if (hasAccuracy()) accuracy else 0f,
+            timestampMs = if (time > 0L) time else System.currentTimeMillis(),
+            speedKmh = speedKmh,
+        )
+    }
 }
