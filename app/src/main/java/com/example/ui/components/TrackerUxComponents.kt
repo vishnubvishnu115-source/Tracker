@@ -17,6 +17,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -34,16 +35,13 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.GpsFixed
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,14 +62,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
@@ -82,6 +83,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.ui.theme.AppIcons
 import com.example.ui.theme.LocalTelemetryColors
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -237,7 +239,7 @@ fun SlideToStopTrack(
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
-                    imageVector = Icons.Filled.Stop,
+                    imageVector = AppIcons.Stop,
                     contentDescription = stringResource(R.string.action_stop_tracking),
                     tint = telemetryColors.stopRed,
                     modifier = Modifier.size(24.dp),
@@ -436,9 +438,9 @@ fun LogoutConfirmationSheet(
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = if (isTracking) {
-                                Icons.Filled.WarningAmber
+                                AppIcons.WarningAmber
                             } else {
-                                Icons.AutoMirrored.Filled.Logout
+                                AppIcons.Logout
                             },
                             contentDescription = null,
                             tint = if (isTracking) {
@@ -549,6 +551,24 @@ fun BrandedLaunchSplash(
         ),
         label = "splashRing1",
     )
+    val logoBreath by pulseTransition.animateFloat(
+        initialValue = 0.97f,
+        targetValue = 1.04f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "splashLogoBreath",
+    )
+    val dotWave by pulseTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "splashDotWave",
+    )
 
     Box(
         contentAlignment = Alignment.Center,
@@ -556,48 +576,63 @@ fun BrandedLaunchSplash(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
+        TelemetryAnimatedBackground(
+            style = TelemetryBackdropStyle.SPLASH,
+            modifier = Modifier.fillMaxSize(),
+        )
+
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp),
         ) {
             Box(
                 contentAlignment = Alignment.Center,
-                modifier = Modifier.size(132.dp),
+                modifier = Modifier.size(144.dp),
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val maxR = size.minDimension / 2f
                     drawCircle(
                         color = primary.copy(alpha = (1f - ring1) * 0.28f),
-                        radius = (30.dp.toPx()) + (maxR - 30.dp.toPx()) * ring1,
+                        radius = (34.dp.toPx()) + (maxR - 34.dp.toPx()) * ring1,
                     )
                     val secondPhase = (ring1 + 0.5f) % 1f
                     drawCircle(
                         color = primary.copy(alpha = (1f - secondPhase) * 0.22f),
-                        radius = (30.dp.toPx()) + (maxR - 30.dp.toPx()) * secondPhase,
+                        radius = (34.dp.toPx()) + (maxR - 34.dp.toPx()) * secondPhase,
                     )
                 }
 
                 Surface(
-                    shape = RoundedCornerShape(22.dp),
-                    color = primary,
-                    shadowElevation = 8.dp,
-                    modifier = Modifier.size(68.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    color = Color.Transparent,
+                    border = BorderStroke(1.2.dp, primary.copy(alpha = 0.32f)),
+                    shadowElevation = 10.dp,
+                    modifier = Modifier
+                        .size(82.dp)
+                        .scale(logoBreath),
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Filled.GpsFixed,
-                            contentDescription = stringResource(R.string.cd_brand_logo),
-                            tint = Color.White,
-                            modifier = Modifier.size(34.dp),
-                        )
-                    }
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_trackpulse_logo),
+                        contentDescription = stringResource(R.string.cd_brand_logo),
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
             }
 
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 Text(
                     text = stringResource(R.string.app_name),
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                    ),
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
@@ -605,6 +640,27 @@ fun BrandedLaunchSplash(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 6.dp),
+            ) {
+                for (idx in 0 until 3) {
+                    val dist = kotlin.math.min(
+                        kotlin.math.abs(dotWave - idx),
+                        3f - kotlin.math.abs(dotWave - idx),
+                    )
+                    val emphasis = (1f - dist).coerceIn(0f, 1f)
+                    Box(
+                        modifier = Modifier
+                            .size((6f + 3f * emphasis).dp)
+                            .alpha(0.32f + 0.68f * emphasis)
+                            .clip(CircleShape)
+                            .background(primary),
+                    )
+                }
             }
         }
     }

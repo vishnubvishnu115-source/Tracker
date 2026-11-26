@@ -16,9 +16,13 @@ import com.example.data.model.UserSession
 import com.example.data.model.ZohoAuthResult
 import com.example.data.network.ZohoTrackerApi
 import com.example.data.session.SessionStore
+import com.example.data.storage.AppStorageManager
+import com.example.data.storage.ProfileImageStorage
+import com.example.data.storage.StorageUsageSummary
 import com.example.service.LocationTrackingService
 import com.example.service.TrackingStateHolder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,7 +35,7 @@ import java.io.File
 data class TrackerUiState(
     val isLoadingSession: Boolean = true,
     val session: UserSession? = null,
-    val themeMode: AppThemeMode = AppThemeMode.LIGHT,
+    val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     val accentTheme: AppAccentTheme = AppAccentTheme.INDIGO,
     val historySyncMode: HistorySyncMode = HistorySyncMode.SPEED_ADAPTIVE,
     val profileImagePath: String? = null,
@@ -42,6 +46,7 @@ data class TrackerUiState(
     val authError: String? = null,
     val isTracking: Boolean = false,
     val isAcquiringInitialFix: Boolean = false,
+    val isStationaryIdle: Boolean = false,
     val isWakeLockActive: Boolean = false,
     val latestLocation: GpsLocation? = null,
     val currentSpeedKmh: Float = 0f,
@@ -56,6 +61,9 @@ data class TrackerUiState(
     val trackingError: String? = null,
     val isPermissionError: Boolean = false,
     val recentLogs: List<SyncLogEntry> = emptyList(),
+    val storageUsage: StorageUsageSummary = StorageUsageSummary(),
+    val hasBackgroundLocation: Boolean = false,
+    val isBatteryUnrestricted: Boolean = false,
 )
 
 class TrackerViewModel(application: Application) : AndroidViewModel(application) {
@@ -70,7 +78,24 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
 
     init {
         viewModelScope.launch {
+            var initialSplashShown = false
             sessionStore.sessionFlow.collect { savedSession ->
+                if (!initialSplashShown) {
+                    initialSplashShown = true
+                    // Ensure saved theme & accent preferences are hydrated before ending launch splash
+                    val initialPrefs = sessionStore.preferencesFlow.first()
+                    val validPath = initialPrefs.profileImagePath?.takeIf { File(it).exists() }
+                    _uiState.update { state ->
+                        state.copy(
+                            themeMode = initialPrefs.themeMode,
+                            accentTheme = initialPrefs.accentTheme,
+                            profileImagePath = validPath,
+                            profileImageVersion = initialPrefs.profileImageVersion,
+                            historySyncMode = initialPrefs.historySyncMode,
+                        )
+                    }
+                    delay(850L)
+                }
                 _uiState.update { state ->
                     state.copy(
                         isLoadingSession = false,
@@ -117,6 +142,7 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
                     state.copy(
                         isTracking = runtime.isTracking,
                         isAcquiringInitialFix = runtime.isAcquiringInitialFix,
+                        isStationaryIdle = runtime.isStationaryIdle,
                         isWakeLockActive = runtime.isWakeLockActive,
                         latestLocation = runtime.latestLocation,
                         currentSpeedKmh = runtime.currentSpeedKmh,
@@ -152,6 +178,49 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
                     LocationTrackingService.start(appContext, userId)
                 }
             }
+        }
+
+        refreshStorageUsage()
+        refreshBackgroundProtection()
+    }
+
+    fun refreshBackgroundProtection() {
+        _uiState.update { state ->
+            state.copy(
+                hasBackgroundLocation = locationClient.hasBackgroundLocationPermission(),
+                isBatteryUnrestricted = locationClient.isBatteryOptimizationIgnored(),
+            )
+        }
+    }
+
+    fun refreshStorageUsage() {
+        viewModelScope.launch {
+            val summary = withContext(Dispatchers.IO) {
+                AppStorageManager.inspectStorage(appContext)
+            }
+            _uiState.update { state ->
+                state.copy(
+                    storageUsage = summary.copy(isClearingCache = state.storageUsage.isClearingCache),
+                )
+            }
+        }
+    }
+
+    fun clearAppCache(onComplete: (Long) -> Unit) {
+        if (_uiState.value.storageUsage.isClearingCache) return
+        viewModelScope.launch {
+            _uiState.update { state ->
+                state.copy(storageUsage = state.storageUsage.copy(isClearingCache = true))
+            }
+            val (freedBytes, updatedSummary) = withContext(Dispatchers.IO) {
+                val freed = AppStorageManager.clearCache(appContext)
+                val summary = AppStorageManager.inspectStorage(appContext)
+                freed to summary
+            }
+            _uiState.update { state ->
+                state.copy(storageUsage = updatedSummary.copy(isClearingCache = false))
+            }
+            onComplete(freedBytes)
         }
     }
 
@@ -195,17 +264,7 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
             _uiState.update { it.copy(isUpdatingAvatar = true) }
             val savedPath = withContext(Dispatchers.IO) {
                 runCatching {
-                    val targetFile = File(appContext.filesDir, "operator_profile_avatar.img")
-                    appContext.contentResolver.openInputStream(uri)?.use { input ->
-                        targetFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    } ?: return@runCatching null
-                    if (targetFile.exists() && targetFile.length() > 0L) {
-                        targetFile.absolutePath
-                    } else {
-                        null
-                    }
+                    ProfileImageStorage.saveCompressedAvatar(appContext, uri)
                 }.getOrNull()
             }
 
@@ -219,6 +278,7 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
                         isUpdatingAvatar = false,
                     )
                 }
+                refreshStorageUsage()
             } else {
                 _uiState.update { it.copy(isUpdatingAvatar = false) }
                 TrackingStateHolder.reportError(
@@ -232,14 +292,13 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
     fun removeProfileImage() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                runCatching {
-                    File(appContext.filesDir, "operator_profile_avatar.img").delete()
-                }
+                ProfileImageStorage.deleteAvatar(appContext)
             }
             sessionStore.saveProfileImage(null, 0L)
             _uiState.update {
                 it.copy(profileImagePath = null, profileImageVersion = 0L)
             }
+            refreshStorageUsage()
         }
     }
 
@@ -312,6 +371,7 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
 
         TrackingStateHolder.dismissError()
         LocationTrackingService.start(appContext, currentSession.userId)
+        refreshBackgroundProtection()
     }
 
     fun stopTracking(errorMessage: String? = null, isPermissionIssue: Boolean = false) {
@@ -344,8 +404,10 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
                     historySyncMode = current.historySyncMode,
                     profileImagePath = current.profileImagePath,
                     profileImageVersion = current.profileImageVersion,
+                    storageUsage = current.storageUsage,
                 )
             }
+            refreshStorageUsage()
         }
     }
 }

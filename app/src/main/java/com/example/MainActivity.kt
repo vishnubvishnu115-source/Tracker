@@ -92,8 +92,12 @@ private fun TrackPulseApp(
                         email = uiState.emailInput,
                         isSigningIn = uiState.isSigningIn,
                         errorMessage = uiState.authError,
+                        themeMode = uiState.themeMode,
+                        accentTheme = uiState.accentTheme,
                         onEmailChanged = viewModel::onEmailChanged,
                         onSignInClick = viewModel::signIn,
+                        onSelectThemeMode = viewModel::setThemeMode,
+                        onSelectAccentTheme = viewModel::setAccentTheme,
                     )
                 }
                 else -> {
@@ -109,6 +113,9 @@ private fun TrackPulseApp(
                         onSelectHistorySyncMode = viewModel::setHistorySyncMode,
                         onPickProfileImage = viewModel::saveProfileImageFromUri,
                         onRemoveProfileImage = viewModel::removeProfileImage,
+                        onRefreshStorage = viewModel::refreshStorageUsage,
+                        onRefreshBackgroundProtection = viewModel::refreshBackgroundProtection,
+                        onClearCache = viewModel::clearAppCache,
                         onLogout = viewModel::logout,
                     )
                 }

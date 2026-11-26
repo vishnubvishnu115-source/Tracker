@@ -10,23 +10,24 @@ import kotlinx.coroutines.flow.update
 
 /**
  * Process-wide live telemetry state shared between [LocationTrackingService] and the UI.
- * Keeps live metrics, speed tiers, coordinates, countdowns, and sync logs intact even when the
- * Activity is closed and reopened while background tracking is active.
+ * Keeps live metrics, speed tiers, idle/movement state, coordinates, countdowns, and sync logs
+ * intact even when the Activity is closed and reopened while background tracking is active.
  */
 data class TrackingRuntimeState(
     val isTracking: Boolean = false,
     val isAcquiringInitialFix: Boolean = false,
+    val isStationaryIdle: Boolean = false,
     val isWakeLockActive: Boolean = false,
     val latestLocation: GpsLocation? = null,
     val currentSpeedKmh: Float = 0f,
     val activeSpeedTier: SpeedHistoryTier = SpeedHistoryTier.STATIONARY,
-    val activeHistoryIntervalSec: Int = 60,
+    val activeHistoryIntervalSec: Int = 120,
     val liveSyncCount: Int = 0,
     val lastLiveSyncTime: String? = null,
     val isSendingCurrent: Boolean = false,
     val historyLogCount: Int = 0,
     val lastHistorySyncTime: String? = null,
-    val historyCountdownSec: Int = 60,
+    val historyCountdownSec: Int = 120,
     val trackingError: String? = null,
     val isPermissionError: Boolean = false,
     val recentLogs: List<SyncLogEntry> = emptyList(),
@@ -59,6 +60,7 @@ object TrackingStateHolder {
             it.copy(
                 isTracking = false,
                 isAcquiringInitialFix = false,
+                isStationaryIdle = false,
                 isWakeLockActive = false,
                 isSendingCurrent = false,
                 currentSpeedKmh = 0f,

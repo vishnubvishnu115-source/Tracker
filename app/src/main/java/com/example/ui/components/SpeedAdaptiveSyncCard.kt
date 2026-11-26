@@ -16,9 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -39,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.HistorySyncMode
 import com.example.data.model.SpeedHistoryTier
+import com.example.ui.theme.AppIcons
 import com.example.ui.theme.LocalTelemetryColors
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -91,7 +89,7 @@ fun SpeedAdaptiveSyncCard(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                imageVector = Icons.Filled.Speed,
+                                imageVector = AppIcons.Speed,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(18.dp),
@@ -166,7 +164,7 @@ fun SpeedAdaptiveSyncCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     SpeedModeSegment(
-                        icon = Icons.Filled.Speed,
+                        icon = AppIcons.Speed,
                         label = stringResource(R.string.speed_mode_auto),
                         selected = isSpeedAuto,
                         onClick = { onSelectMode(HistorySyncMode.SPEED_ADAPTIVE) },
@@ -175,7 +173,7 @@ fun SpeedAdaptiveSyncCard(
                             .testTag("history_mode_speed_auto"),
                     )
                     SpeedModeSegment(
-                        icon = Icons.Filled.Timer,
+                        icon = AppIcons.Timer,
                         label = stringResource(R.string.speed_mode_fixed),
                         selected = !isSpeedAuto,
                         onClick = { onSelectMode(HistorySyncMode.FIXED_60S) },

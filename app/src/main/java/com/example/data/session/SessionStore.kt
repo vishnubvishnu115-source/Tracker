@@ -49,7 +49,7 @@ class SessionStore(private val context: Context) {
     val preferencesFlow: Flow<UserPreferences> = context.sessionDataStore.data.map { prefs ->
         val themeMode = prefs[Keys.THEME_MODE]
             ?.let { runCatching { AppThemeMode.valueOf(it) }.getOrNull() }
-            ?: AppThemeMode.LIGHT
+            ?: AppThemeMode.SYSTEM
         val accentTheme = prefs[Keys.ACCENT_THEME]
             ?.let { runCatching { AppAccentTheme.valueOf(it) }.getOrNull() }
             ?: AppAccentTheme.INDIGO

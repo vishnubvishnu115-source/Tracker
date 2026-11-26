@@ -31,8 +31,12 @@
     <string name="label_longitude">LONGITUDE</string>
     <string name="label_accuracy">GPS Accuracy</string>
     <string name="status_tracking_live">Live</string>
+    <string name="status_tracking_idle">Idle</string>
     <string name="status_acquiring_gps">Acquiring</string>
     <string name="status_standby">Standby</string>
+    <string name="idle_header_subtitle">Stationary · Syncs automatically when you move</string>
+    <string name="idle_card_banner">No movement detected · Live &amp; History sync paused until you move</string>
+    <string name="idle_waiting_move">Waiting to move</string>
 
     <string name="card_live_sync_title">Live Sync (2s)</string>
     <string name="card_history_log_title">History Log (1m)</string>
@@ -67,6 +71,7 @@
     <string name="theme_mode_light">Light</string>
     <string name="theme_mode_dark">Dark</string>
     <string name="theme_mode_system">System</string>
+    <string name="cd_appearance_button">Change appearance and theme</string>
     <string name="account_change_photo">Change Photo</string>
     <string name="photo_sheet_title">Update Profile Photo</string>
     <string name="photo_sheet_subtitle">Choose an image from your device gallery or Google Drive</string>
@@ -78,6 +83,12 @@
 
     <string name="account_section_diagnostics">Device &amp; Sync Settings</string>
     <string name="account_gps_permission">Location Permission</string>
+    <string name="account_bg_location">Background Location</string>
+    <string name="account_bg_location_always">Always Allowed</string>
+    <string name="account_bg_location_in_use">Tap to Allow Always</string>
+    <string name="account_battery_mode">Battery Mode</string>
+    <string name="account_battery_unrestricted">Unrestricted</string>
+    <string name="account_battery_optimized">Tap to Unrestrict</string>
     <string name="account_permission_granted">Granted</string>
     <string name="account_permission_needed">Required</string>
     <string name="account_wake_lock">Screen Wake Lock</string>
@@ -87,6 +98,21 @@
     <string name="account_intervals">Sync Schedule</string>
     <string name="account_intervals_value">2s Live · 60s History</string>
     <string name="account_intervals_speed_value">2s Live · Speed Auto (15s–120s)</string>
+
+    <string name="bg_guard_title">Keep Tracking Alive When Closed</string>
+    <string name="bg_guard_desc">TrackPulse collects GPS coordinates even when closed or swiped away so live sync continues until you stop it. Enable both settings below so Android never stops tracking:</string>
+    <string name="bg_guard_allow_always">Allow All the Time</string>
+    <string name="bg_guard_battery_btn">Set Battery Unrestricted</string>
+
+    <string name="account_section_storage">Storage &amp; Cache</string>
+    <string name="account_storage_subtitle">App-private data on this device</string>
+    <string name="account_storage_avatar">Profile Photo</string>
+    <string name="account_storage_prefs">App Preferences</string>
+    <string name="account_storage_cache">Temporary Cache</string>
+    <string name="account_storage_total_prefix">Total</string>
+    <string name="action_clear_cache">Clear Cache</string>
+    <string name="action_clearing_cache">Clearing…</string>
+    <string name="action_cache_clean">Cache Clean</string>
 
     <string name="section_speed_history">Speed-Based History Sync</string>
     <string name="speed_mode_auto">Speed Auto</string>
@@ -103,14 +129,18 @@
     <string name="toast_tracking_stopped">Tracking stopped &amp; background service ended</string>
     <string name="toast_speed_mode_auto">Speed-based history sync enabled</string>
     <string name="toast_speed_mode_fixed">Switched to fixed 60s history sync</string>
+    <string name="toast_cache_already_clean">Cache is already clean</string>
+    <string name="toast_cache_cleared">Cleared %1$s of cache</string>
 
     <string name="notif_channel_name">Live GPS Tracking</string>
     <string name="notif_channel_description">Keeps real-time GPS tracking running when TrackPulse is closed until you stop it.</string>
     <string name="notif_tracking_active_title">TrackPulse · Live Tracking Active</string>
+    <string name="notif_tracking_idle_title">TrackPulse · Idle (No Movement)</string>
     <string name="notif_tracking_acquiring_title">TrackPulse · Acquiring GPS Lock…</string>
     <string name="notif_tracking_acquiring_body">Connecting to high-accuracy satellite positioning…</string>
     <string name="notif_tracking_summary">Live: %1$d · History: %2$d · Next 1m sync in %3$ds</string>
     <string name="notif_tracking_summary_speed">%1$d km/h · Live: %2$d · Hist: %3$d · Next in %4$ds</string>
+    <string name="notif_tracking_summary_idle">Idle · Syncs when you move · Live: %1$d · Hist: %2$d</string>
     <string name="notif_tracking_background_hint">Stays active even when the app is closed until you tap Stop.</string>
 
     <string name="signal_excellent">Excellent</string>

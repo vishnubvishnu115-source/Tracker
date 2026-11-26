@@ -1,5 +1,6 @@
 package com.example.service
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -12,6 +13,7 @@ import android.location.Location
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -77,6 +79,9 @@ class LocationTrackingService : Service() {
     private var latestCoordsRef: GpsLocation? = null
 
     @Volatile
+    private var lastSentCurrentCoords: GpsLocation? = null
+
+    @Volatile
     private var lastSentHistoryCoords: GpsLocation? = null
 
     @Volatile
@@ -91,6 +96,9 @@ class LocationTrackingService : Service() {
 
     @Volatile
     private var lastNotificationUpdateAt: Long = 0L
+
+    @Volatile
+    private var explicitStopRequested: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -121,6 +129,8 @@ class LocationTrackingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                explicitStopRequested = true
+                cancelRestartWatchdog()
                 stopTrackingAndSelf(clearPersistence = true)
                 return START_NOT_STICKY
             }
@@ -128,9 +138,13 @@ class LocationTrackingService : Service() {
             ACTION_START -> {
                 val requestedUserId = intent.getStringExtra(EXTRA_USER_ID)?.trim().orEmpty()
                 if (requestedUserId.isEmpty()) {
+                    explicitStopRequested = true
+                    cancelRestartWatchdog()
                     stopTrackingAndSelf(clearPersistence = true)
                     return START_NOT_STICKY
                 }
+                explicitStopRequested = false
+                cancelRestartWatchdog()
                 if (!promoteToForeground(isAcquiring = true)) {
                     TrackingStateHolder.markStopped(
                         errorMessage = getString(R.string.error_permission_denied),
@@ -144,6 +158,7 @@ class LocationTrackingService : Service() {
             }
 
             null -> {
+                explicitStopRequested = false
                 if (!promoteToForeground(isAcquiring = true)) {
                     stopSelf()
                     return START_NOT_STICKY
@@ -155,6 +170,8 @@ class LocationTrackingService : Service() {
                     if (shouldResume && !persistedUserId.isNullOrBlank() && locationClient.hasLocationPermission()) {
                         startTrackingSession(persistedUserId)
                     } else {
+                        explicitStopRequested = true
+                        cancelRestartWatchdog()
                         stopTrackingAndSelf(clearPersistence = false)
                     }
                 }
@@ -168,8 +185,11 @@ class LocationTrackingService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         val state = TrackingStateHolder.state.value
-        if (state.isTracking || state.isAcquiringInitialFix) {
+        if (!explicitStopRequested && (state.isTracking || state.isAcquiringInitialFix || activeUserId != null)) {
             updateNotification(force = true)
+            // Schedule a lightweight self-recovery watchdog in case the device OEM kills
+            // the process shortly after the user swipes TrackPulse from Recents.
+            scheduleRestartWatchdog(delayMs = 2_000L)
         }
     }
 
@@ -228,6 +248,7 @@ class LocationTrackingService : Service() {
 
             lastCurrentSentAt = 0L
             lastHistorySentAt = 0L
+            lastSentCurrentCoords = null
             lastSentHistoryCoords = null
             isSendingCurrentLock.set(false)
             isSendingHistoryLock.set(false)
@@ -240,6 +261,7 @@ class LocationTrackingService : Service() {
                 it.copy(
                     isAcquiringInitialFix = false,
                     isTracking = true,
+                    isStationaryIdle = false,
                     isWakeLockActive = true,
                     currentSpeedKmh = initialSpeed,
                     activeSpeedTier = initialTier,
@@ -288,14 +310,42 @@ class LocationTrackingService : Service() {
                 val historyIntervalSec = resolveHistoryIntervalSec(currentHistorySyncMode, speedTier)
                 val historyIntervalMs = historyIntervalSec * 1_000L
 
-                // a) Current Location (Every 2 seconds) with in-flight lock
+                val hasMovedForLive = coords != null && (
+                    lastSentCurrentCoords == null ||
+                        hasMovedBeyondTolerance(
+                            previous = lastSentCurrentCoords!!,
+                            current = coords,
+                            minMeters = MIN_LIVE_MOVE_METERS,
+                            maxMeters = MAX_LIVE_MOVE_METERS,
+                        )
+                    )
+                val hasMovedForHistory = coords != null && (
+                    lastSentHistoryCoords == null ||
+                        hasMovedBeyondTolerance(
+                            previous = lastSentHistoryCoords!!,
+                            current = coords,
+                            minMeters = MIN_HISTORY_TOLERANCE_METERS,
+                            maxMeters = MAX_HISTORY_TOLERANCE_METERS,
+                        )
+                    )
+
+                // Stationary idle whenever initial sync has completed and device is not moving
+                val isCurrentlyIdle = coords != null &&
+                    lastSentCurrentCoords != null &&
+                    !hasMovedForLive &&
+                    !hasMovedForHistory
+
+                // a) Current Location (Every 2 seconds — ONLY when moved or initial fix)
                 if (
                     coords != null &&
+                    hasMovedForLive &&
                     now - lastCurrentSentAt >= 2_000L &&
                     isSendingCurrentLock.compareAndSet(false, true)
                 ) {
                     lastCurrentSentAt = now
-                    TrackingStateHolder.update { it.copy(isSendingCurrent = true) }
+                    TrackingStateHolder.update {
+                        it.copy(isSendingCurrent = true, isStationaryIdle = false)
+                    }
                     launch {
                         try {
                             val result = zohoApi.postLocation(
@@ -304,6 +354,9 @@ class LocationTrackingService : Service() {
                                 latitude = coords.latitude,
                                 longitude = coords.longitude,
                             )
+                            if (result is ZohoPostResult.Success) {
+                                lastSentCurrentCoords = coords
+                            }
                             handleSyncResult(SyncType.CURRENT, result, coords)
                         } finally {
                             isSendingCurrentLock.set(false)
@@ -312,51 +365,42 @@ class LocationTrackingService : Service() {
                     }
                 }
 
-                // b) History Location (Speed-Adaptive: 15s / 30s / 60s / 120s, or Fixed 60s)
-                // Compare with previous history point using an approximate +/- average radius:
-                // if still within the same area, skip API POST and show as synced on screen.
+                // b) History Location (Speed-Adaptive or Fixed 60s — ONLY when moved or initial fix)
                 if (
                     coords != null &&
+                    hasMovedForHistory &&
                     now - lastHistorySentAt >= historyIntervalMs &&
                     isSendingHistoryLock.compareAndSet(false, true)
                 ) {
                     lastHistorySentAt = now
-                    val previousHistory = lastSentHistoryCoords
-                    if (previousHistory != null && isWithinAverageTolerance(previousHistory, coords)) {
-                        handleSyncResult(
-                            type = SyncType.HISTORY,
-                            result = ZohoPostResult.Success("Synced (same area)"),
-                            coords = coords,
-                        )
-                        isSendingHistoryLock.set(false)
-                    } else {
-                        launch {
-                            try {
-                                val result = zohoApi.postLocation(
-                                    type = "history",
-                                    userId = userId,
-                                    latitude = coords.latitude,
-                                    longitude = coords.longitude,
-                                )
-                                if (result is ZohoPostResult.Success) {
-                                    lastSentHistoryCoords = coords
-                                }
-                                handleSyncResult(SyncType.HISTORY, result, coords)
-                            } finally {
-                                isSendingHistoryLock.set(false)
+                    TrackingStateHolder.update { it.copy(isStationaryIdle = false) }
+                    launch {
+                        try {
+                            val result = zohoApi.postLocation(
+                                type = "history",
+                                userId = userId,
+                                latitude = coords.latitude,
+                                longitude = coords.longitude,
+                            )
+                            if (result is ZohoPostResult.Success) {
+                                lastSentHistoryCoords = coords
                             }
+                            handleSyncResult(SyncType.HISTORY, result, coords)
+                        } finally {
+                            isSendingHistoryLock.set(false)
                         }
                     }
                 }
 
-                // c) Live dynamic countdown UI
-                val remainingSeconds = if (lastHistorySentAt == 0L) {
-                    if (coords == null) historyIntervalSec else 0
-                } else {
-                    max(0, ceil((historyIntervalMs - (now - lastHistorySentAt)) / 1000.0).toInt())
+                // c) Live dynamic countdown & idle state UI
+                val remainingSeconds = when {
+                    isCurrentlyIdle -> historyIntervalSec
+                    lastHistorySentAt == 0L -> if (coords == null) historyIntervalSec else 0
+                    else -> max(0, ceil((historyIntervalMs - (now - lastHistorySentAt)) / 1000.0).toInt())
                 }
                 TrackingStateHolder.update {
                     it.copy(
+                        isStationaryIdle = isCurrentlyIdle,
                         currentSpeedKmh = speedKmh,
                         activeSpeedTier = speedTier,
                         activeHistoryIntervalSec = historyIntervalSec,
@@ -364,6 +408,9 @@ class LocationTrackingService : Service() {
                     )
                 }
                 updateNotification(force = false)
+                if (cpuWakeLock?.isHeld != true) {
+                    acquireCpuWakeLock()
+                }
 
                 delay(1_000L)
             }
@@ -414,13 +461,12 @@ class LocationTrackingService : Service() {
                     speedKmh = coords.speedKmh,
                 )
                 TrackingStateHolder.update { state ->
-                    state.copy(recentLogs = (listOf(entry) + state.recentLogs).take(15))
+                    state.copy(
+                        trackingError = "Zoho sync issue: ${result.message}",
+                        isPermissionError = false,
+                        recentLogs = (listOf(entry) + state.recentLogs).take(15),
+                    )
                 }
-                stopTrackingAndSelf(
-                    clearPersistence = true,
-                    errorMessage = "Zoho Sync Stopped: ${result.message}",
-                    isPermissionIssue = false,
-                )
             }
 
             is ZohoPostResult.NetworkError -> {
@@ -450,12 +496,22 @@ class LocationTrackingService : Service() {
         latestCoordsRef = fix
         val tier = SpeedHistoryTier.fromSpeedKmh(fix.speedKmh)
         val intervalSec = resolveHistoryIntervalSec(currentHistorySyncMode, tier)
+        val movedNow = lastSentCurrentCoords?.let { prev ->
+            hasMovedBeyondTolerance(
+                previous = prev,
+                current = fix,
+                minMeters = MIN_LIVE_MOVE_METERS,
+                maxMeters = MAX_LIVE_MOVE_METERS,
+            )
+        } ?: true
+
         TrackingStateHolder.update { state ->
             state.copy(
                 latestLocation = fix,
                 currentSpeedKmh = fix.speedKmh,
                 activeSpeedTier = tier,
                 activeHistoryIntervalSec = intervalSec,
+                isStationaryIdle = if (movedNow) false else state.isStationaryIdle,
             )
         }
     }
@@ -469,11 +525,15 @@ class LocationTrackingService : Service() {
     }
 
     /**
-     * Checks whether [current] is within an approximate +/- average radius around [previous]
-     * (at least 20m outdoors, scaling with average GPS accuracy up to 35m indoors) so normal
-     * stationary GPS drift does not trigger duplicate history uploads.
+     * Checks whether [current] has moved beyond an approximate +/- average radius around [previous]
+     * so stationary GPS drift does not trigger redundant Live or History API uploads.
      */
-    private fun isWithinAverageTolerance(previous: GpsLocation, current: GpsLocation): Boolean {
+    private fun hasMovedBeyondTolerance(
+        previous: GpsLocation,
+        current: GpsLocation,
+        minMeters: Float,
+        maxMeters: Float,
+    ): Boolean {
         val distanceResult = FloatArray(1)
         Location.distanceBetween(
             previous.latitude,
@@ -482,12 +542,10 @@ class LocationTrackingService : Service() {
             current.longitude,
             distanceResult,
         )
+        val distanceMeters = distanceResult[0]
         val averageAccuracy = (previous.accuracyMeters + current.accuracyMeters) / 2f
-        val toleranceMeters = averageAccuracy.coerceIn(
-            MIN_HISTORY_TOLERANCE_METERS,
-            MAX_HISTORY_TOLERANCE_METERS,
-        )
-        return distanceResult[0] <= toleranceMeters
+        val toleranceMeters = averageAccuracy.coerceIn(minMeters, maxMeters)
+        return distanceMeters > toleranceMeters
     }
 
     private fun stopTrackingAndSelf(
@@ -503,6 +561,7 @@ class LocationTrackingService : Service() {
         schedulerJob = null
         isSendingCurrentLock.set(false)
         isSendingHistoryLock.set(false)
+        lastSentCurrentCoords = null
         lastSentHistoryCoords = null
         activeUserId = null
 
@@ -513,6 +572,8 @@ class LocationTrackingService : Service() {
         )
 
         if (clearPersistence) {
+            explicitStopRequested = true
+            cancelRestartWatchdog()
             CoroutineScope(Dispatchers.IO).launch {
                 runCatching { sessionStore.saveTrackingActive(active = false, userId = null) }
             }
@@ -574,17 +635,21 @@ class LocationTrackingService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val title = if (acquiring) {
-            getString(R.string.notif_tracking_acquiring_title)
-        } else {
-            getString(R.string.notif_tracking_active_title)
+        val title = when {
+            acquiring -> getString(R.string.notif_tracking_acquiring_title)
+            state.isStationaryIdle -> getString(R.string.notif_tracking_idle_title)
+            else -> getString(R.string.notif_tracking_active_title)
         }
 
         val speedRounded = state.currentSpeedKmh.roundToInt()
-        val summaryLine = if (acquiring) {
-            getString(R.string.notif_tracking_acquiring_body)
-        } else {
-            getString(
+        val summaryLine = when {
+            acquiring -> getString(R.string.notif_tracking_acquiring_body)
+            state.isStationaryIdle -> getString(
+                R.string.notif_tracking_summary_idle,
+                state.liveSyncCount,
+                state.historyLogCount,
+            )
+            else -> getString(
                 R.string.notif_tracking_summary_speed,
                 speedRounded,
                 state.liveSyncCount,
@@ -680,12 +745,54 @@ class LocationTrackingService : Service() {
         timeFormatter.format(Date())
     }
 
+    private fun scheduleRestartWatchdog(delayMs: Long) {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        val restartIntent = Intent(this, TrackingRestartReceiver::class.java).apply {
+            action = TrackingRestartReceiver.ACTION_RESTART_TRACKING
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            REQ_RESTART_WATCHDOG,
+            restartIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val triggerAt = SystemClock.elapsedRealtime() + delayMs
+        runCatching {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                triggerAt,
+                pendingIntent,
+            )
+        }
+    }
+
+    private fun cancelRestartWatchdog() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        val restartIntent = Intent(this, TrackingRestartReceiver::class.java).apply {
+            action = TrackingRestartReceiver.ACTION_RESTART_TRACKING
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            REQ_RESTART_WATCHDOG,
+            restartIntent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+        )
+        if (pendingIntent != null) {
+            runCatching { alarmManager.cancel(pendingIntent) }
+            pendingIntent.cancel()
+        }
+    }
+
     override fun onDestroy() {
+        val shouldRevive = !explicitStopRequested && activeUserId != null
         initialFixJob?.cancel()
         locationStreamJob?.cancel()
         schedulerJob?.cancel()
         releaseCpuWakeLock()
         serviceScope.cancel()
+        if (shouldRevive) {
+            scheduleRestartWatchdog(delayMs = 1_500L)
+        }
         super.onDestroy()
     }
 
@@ -694,6 +801,9 @@ class LocationTrackingService : Service() {
         private const val NOTIFICATION_ID = 4011
         private const val REQ_OPEN_APP = 100
         private const val REQ_STOP_TRACKING = 101
+        private const val REQ_RESTART_WATCHDOG = 102
+        private const val MIN_LIVE_MOVE_METERS = 10f
+        private const val MAX_LIVE_MOVE_METERS = 20f
         private const val MIN_HISTORY_TOLERANCE_METERS = 20f
         private const val MAX_HISTORY_TOLERANCE_METERS = 35f
 

@@ -4,7 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -13,6 +13,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,16 +33,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.BrightnessAuto
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CloudQueue
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -57,6 +49,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -64,9 +57,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -75,17 +69,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.AppAccentTheme
 import com.example.data.model.AppThemeMode
 import com.example.data.model.HistorySyncMode
 import com.example.data.model.SpeedHistoryTier
 import com.example.data.model.UserSession
+import com.example.data.storage.AppStorageManager
+import com.example.data.storage.ProfileImageStorage
+import com.example.data.storage.StorageUsageSummary
+import com.example.ui.theme.AppIcons
 import com.example.ui.theme.LocalTelemetryColors
 import com.example.ui.theme.accentPaletteFor
-import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 @Composable
@@ -98,17 +95,21 @@ fun ProfileAvatar(
     isLoading: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
-    val context = LocalContext.current
     val telemetryColors = LocalTelemetryColors.current
 
-    val imageModel = remember(profileImagePath, profileImageVersion) {
-        profileImagePath?.let { path ->
-            ImageRequest.Builder(context)
-                .data(File(path))
-                .memoryCacheKey("avatar_${path}_$profileImageVersion")
-                .diskCacheKey("avatar_${path}_$profileImageVersion")
-                .crossfade(280)
-                .build()
+    val avatarBitmap by produceState<ImageBitmap?>(
+        initialValue = null,
+        key1 = profileImagePath,
+        key2 = profileImageVersion,
+    ) {
+        value = if (profileImagePath.isNullOrBlank()) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    ProfileImageStorage.decodeAvatarBitmap(profileImagePath)?.asImageBitmap()
+                }.getOrNull()
+            }
         }
     }
 
@@ -133,22 +134,33 @@ fun ProfileAvatar(
                 shape = CircleShape,
             ),
     ) {
-        if (imageModel != null) {
-            AsyncImage(
-                model = imageModel,
-                contentDescription = stringResource(R.string.cd_profile_avatar),
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-            Text(
-                text = name.trim().take(1).uppercase(Locale.getDefault()).ifEmpty { "U" },
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = (size.value * 0.42f).sp,
-                ),
-                color = MaterialTheme.colorScheme.primary,
-            )
+        Crossfade(
+            targetState = avatarBitmap,
+            animationSpec = tween(240),
+            label = "avatarCrossfade",
+        ) { bitmap ->
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = stringResource(R.string.cd_profile_avatar),
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Text(
+                        text = name.trim().take(1).uppercase(Locale.getDefault()).ifEmpty { "U" },
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (size.value * 0.42f).sp,
+                        ),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
         }
 
         if (isLoading) {
@@ -180,7 +192,10 @@ fun AccountTabContent(
     historySyncMode: HistorySyncMode,
     currentSpeedKmh: Float,
     activeSpeedTier: SpeedHistoryTier,
+    storageUsage: StorageUsageSummary,
     hasPermission: Boolean,
+    hasBackgroundLocation: Boolean,
+    isBatteryUnrestricted: Boolean,
     isTracking: Boolean,
     isWakeLockActive: Boolean,
     onSelectThemeMode: (AppThemeMode) -> Unit,
@@ -188,6 +203,9 @@ fun AccountTabContent(
     onSelectHistorySyncMode: (HistorySyncMode) -> Unit,
     onPickProfileImage: (Uri) -> Unit,
     onRemoveProfileImage: () -> Unit,
+    onClearCache: () -> Unit,
+    onRequestBackgroundLocation: () -> Unit,
+    onOpenBatterySettings: () -> Unit,
     onOpenSettings: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
@@ -241,7 +259,7 @@ fun AccountTabContent(
                 Spacer(modifier = Modifier.height(4.dp))
 
                 PhotoSourceOptionTile(
-                    icon = Icons.Filled.PhotoLibrary,
+                    icon = AppIcons.PhotoLibrary,
                     title = stringResource(R.string.photo_source_gallery),
                     subtitle = stringResource(R.string.photo_source_gallery_desc),
                     accentColor = MaterialTheme.colorScheme.primary,
@@ -256,7 +274,7 @@ fun AccountTabContent(
                 )
 
                 PhotoSourceOptionTile(
-                    icon = Icons.Filled.CloudQueue,
+                    icon = AppIcons.CloudQueue,
                     title = stringResource(R.string.photo_source_drive),
                     subtitle = stringResource(R.string.photo_source_drive_desc),
                     accentColor = telemetryColors.liveGreenText,
@@ -270,7 +288,7 @@ fun AccountTabContent(
 
                 if (profileImagePath != null) {
                     PhotoSourceOptionTile(
-                        icon = Icons.Filled.DeleteOutline,
+                        icon = AppIcons.DeleteOutline,
                         title = stringResource(R.string.photo_source_remove),
                         subtitle = "Revert to initial avatar badge",
                         accentColor = telemetryColors.stopRedText,
@@ -334,7 +352,7 @@ fun AccountTabContent(
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    imageVector = Icons.Filled.CameraAlt,
+                                    imageVector = AppIcons.CameraAlt,
                                     contentDescription = stringResource(R.string.cd_edit_avatar),
                                     tint = Color.White,
                                     modifier = Modifier.size(14.dp),
@@ -377,7 +395,7 @@ fun AccountTabContent(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Icon(
-                                    imageVector = Icons.Filled.PhotoLibrary,
+                                    imageVector = AppIcons.PhotoLibrary,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(13.dp),
@@ -431,7 +449,7 @@ fun AccountTabContent(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                imageVector = Icons.Filled.Palette,
+                                imageVector = AppIcons.Palette,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(18.dp),
@@ -468,7 +486,7 @@ fun AccountTabContent(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             ThemeModeSegment(
-                                icon = Icons.Filled.LightMode,
+                                icon = AppIcons.LightMode,
                                 label = stringResource(R.string.theme_mode_light),
                                 selected = themeMode == AppThemeMode.LIGHT,
                                 onClick = { onSelectThemeMode(AppThemeMode.LIGHT) },
@@ -477,7 +495,7 @@ fun AccountTabContent(
                                     .testTag("theme_mode_light"),
                             )
                             ThemeModeSegment(
-                                icon = Icons.Filled.DarkMode,
+                                icon = AppIcons.DarkMode,
                                 label = stringResource(R.string.theme_mode_dark),
                                 selected = themeMode == AppThemeMode.DARK,
                                 onClick = { onSelectThemeMode(AppThemeMode.DARK) },
@@ -486,7 +504,7 @@ fun AccountTabContent(
                                     .testTag("theme_mode_dark"),
                             )
                             ThemeModeSegment(
-                                icon = Icons.Filled.BrightnessAuto,
+                                icon = AppIcons.BrightnessAuto,
                                 label = stringResource(R.string.theme_mode_system),
                                 selected = themeMode == AppThemeMode.SYSTEM,
                                 onClick = { onSelectThemeMode(AppThemeMode.SYSTEM) },
@@ -590,7 +608,14 @@ fun AccountTabContent(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        // 4. Device & Sync Settings Card (Fixed clean single-line alignment!)
+        // 4. Storage & Cache Management Card
+        StorageAndCacheCard(
+            storageUsage = storageUsage,
+            onClearCache = onClearCache,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        // 5. Device & Sync Settings Card (Fixed clean single-line alignment!)
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surface,
@@ -627,6 +652,46 @@ fun AccountTabContent(
                     } else {
                         telemetryColors.countdownAmberText
                     },
+                )
+                HorizontalDivider(color = telemetryColors.cardBorder)
+                AccountBadgeRow(
+                    label = stringResource(R.string.account_bg_location),
+                    badgeText = if (hasBackgroundLocation) {
+                        stringResource(R.string.account_bg_location_always)
+                    } else {
+                        stringResource(R.string.account_bg_location_in_use)
+                    },
+                    bgColor = if (hasBackgroundLocation) {
+                        telemetryColors.liveGreenContainer
+                    } else {
+                        telemetryColors.countdownAmberContainer
+                    },
+                    fgColor = if (hasBackgroundLocation) {
+                        telemetryColors.liveGreenText
+                    } else {
+                        telemetryColors.countdownAmberText
+                    },
+                    onClick = if (!hasBackgroundLocation) onRequestBackgroundLocation else null,
+                )
+                HorizontalDivider(color = telemetryColors.cardBorder)
+                AccountBadgeRow(
+                    label = stringResource(R.string.account_battery_mode),
+                    badgeText = if (isBatteryUnrestricted) {
+                        stringResource(R.string.account_battery_unrestricted)
+                    } else {
+                        stringResource(R.string.account_battery_optimized)
+                    },
+                    bgColor = if (isBatteryUnrestricted) {
+                        telemetryColors.liveGreenContainer
+                    } else {
+                        telemetryColors.countdownAmberContainer
+                    },
+                    fgColor = if (isBatteryUnrestricted) {
+                        telemetryColors.liveGreenText
+                    } else {
+                        telemetryColors.countdownAmberText
+                    },
+                    onClick = if (!isBatteryUnrestricted) onOpenBatterySettings else null,
                 )
                 HorizontalDivider(color = telemetryColors.cardBorder)
                 AccountBadgeRow(
@@ -722,7 +787,7 @@ fun AccountTabContent(
                             .testTag("account_logout_button"),
                     ) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Logout,
+                            imageVector = AppIcons.Logout,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
                         )
@@ -735,6 +800,191 @@ fun AccountTabContent(
                             style = MaterialTheme.typography.labelLarge,
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StorageAndCacheCard(
+    storageUsage: StorageUsageSummary,
+    onClearCache: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val telemetryColors = LocalTelemetryColors.current
+    val hasCache = storageUsage.cacheBytes > 0L
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, telemetryColors.cardBorder),
+        shadowElevation = 3.dp,
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("account_storage_card"),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = telemetryColors.accentContainer,
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = AppIcons.Storage,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        Text(
+                            text = stringResource(R.string.account_section_storage),
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = stringResource(R.string.account_storage_subtitle),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Surface(
+                    shape = CircleShape,
+                    color = telemetryColors.accentContainer,
+                ) {
+                    Text(
+                        text = AppStorageManager.formatByteSize(storageUsage.totalDataBytes),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                            .testTag("storage_total_badge"),
+                    )
+                }
+            }
+
+            HorizontalDivider(color = telemetryColors.cardBorder)
+
+            AccountInfoRow(
+                label = stringResource(R.string.account_storage_avatar),
+                value = AppStorageManager.formatByteSize(storageUsage.profilePhotoBytes),
+                isMono = true,
+            )
+            HorizontalDivider(color = telemetryColors.cardBorder)
+            AccountInfoRow(
+                label = stringResource(R.string.account_storage_prefs),
+                value = AppStorageManager.formatByteSize(storageUsage.preferencesBytes),
+                isMono = true,
+            )
+            HorizontalDivider(color = telemetryColors.cardBorder)
+            AccountInfoRow(
+                label = stringResource(R.string.account_storage_cache),
+                value = AppStorageManager.formatByteSize(storageUsage.cacheBytes),
+                isMono = true,
+            )
+
+            Spacer(modifier = Modifier.height(2.dp))
+
+            OutlinedButton(
+                onClick = onClearCache,
+                enabled = !storageUsage.isClearingCache,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (hasCache) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                    } else {
+                        telemetryColors.cardBorder
+                    },
+                ),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = if (hasCache) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        telemetryColors.liveGreenText
+                    },
+                ),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("clear_cache_button"),
+            ) {
+                if (storageUsage.isClearingCache) {
+                    CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.action_clearing_cache),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                } else if (hasCache) {
+                    Icon(
+                        imageVector = AppIcons.CleaningServices,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "${stringResource(R.string.action_clear_cache)} (${AppStorageManager.formatByteSize(storageUsage.cacheBytes)})",
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontFeatureSettings = "tnum",
+                        ),
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.action_cache_clean),
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                    )
                 }
             }
         }
@@ -894,9 +1144,18 @@ private fun AccountBadgeRow(
     badgeText: String,
     bgColor: Color,
     fgColor: Color,
+    onClick: (() -> Unit)? = null,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = if (onClick != null) {
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                .padding(vertical = 2.dp)
+        } else {
+            Modifier.fillMaxWidth()
+        },
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {

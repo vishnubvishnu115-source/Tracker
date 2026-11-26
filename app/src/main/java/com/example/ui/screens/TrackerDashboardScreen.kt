@@ -37,7 +37,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -64,29 +63,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.CloudUpload
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.GpsFixed
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.RadioButtonChecked
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.ScreenLockPortrait
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Timeline
-import androidx.compose.material.icons.filled.WbSunny
-import androidx.compose.material.icons.outlined.GpsFixed
 import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -112,15 +95,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -142,14 +124,17 @@ import com.example.data.model.SpeedHistoryTier
 import com.example.data.model.SyncLogEntry
 import com.example.data.model.SyncType
 import com.example.data.model.UserSession
+import com.example.data.storage.AppStorageManager
 import com.example.ui.TrackerUiState
 import com.example.ui.components.AccountTabContent
 import com.example.ui.components.FloatingToastPill
 import com.example.ui.components.GpsSignalBars
+import com.example.ui.components.LiquidWaveSecondsLoader
 import com.example.ui.components.LogoutConfirmationSheet
 import com.example.ui.components.ProfileAvatar
 import com.example.ui.components.ShimmerBar
 import com.example.ui.components.SlideToStopTrack
+import com.example.ui.theme.AppIcons
 import com.example.ui.theme.LocalTelemetryColors
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -181,10 +166,14 @@ fun TrackerDashboardScreen(
     onSelectHistorySyncMode: (HistorySyncMode) -> Unit,
     onPickProfileImage: (Uri) -> Unit,
     onRemoveProfileImage: () -> Unit,
+    onRefreshStorage: () -> Unit,
+    onRefreshBackgroundProtection: () -> Unit,
+    onClearCache: ((Long) -> Unit) -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val clipboardManager = LocalClipboardManager.current
     val haptic = LocalHapticFeedback.current
     val session = uiState.session ?: return
@@ -200,6 +189,39 @@ fun TrackerDashboardScreen(
     val trackingStoppedLabel = stringResource(R.string.toast_tracking_stopped)
     val speedAutoLabel = stringResource(R.string.toast_speed_mode_auto)
     val speedFixedLabel = stringResource(R.string.toast_speed_mode_fixed)
+    val cacheAlreadyCleanLabel = stringResource(R.string.toast_cache_already_clean)
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == TrackerNavTab.ACCOUNT) {
+            onRefreshStorage()
+            onRefreshBackgroundProtection()
+        }
+    }
+
+    // Automatically re-check "Allow all the time" and "Unrestricted battery" when returning from Settings
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                onRefreshBackgroundProtection()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val backgroundLocationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) {
+        onRefreshBackgroundProtection()
+    }
+
+    val requestBackgroundLocation: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasLocationPermission()) {
+            backgroundLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+        } else {
+            context.openAppSettings()
+        }
+    }
 
     var previousTrackingState by remember { mutableStateOf(uiState.isTracking) }
     LaunchedEffect(uiState.isTracking) {
@@ -308,6 +330,7 @@ fun TrackerDashboardScreen(
                 profileImagePath = uiState.profileImagePath,
                 profileImageVersion = uiState.profileImageVersion,
                 isTracking = uiState.isTracking,
+                isStationaryIdle = uiState.isStationaryIdle,
                 isWakeLockActive = uiState.isWakeLockActive,
                 onAvatarClick = { selectedTab = TrackerNavTab.ACCOUNT },
                 onLogout = { showLogoutSheet = true },
@@ -387,6 +410,18 @@ fun TrackerDashboardScreen(
 
                     when (currentTab) {
                         TrackerNavTab.TRACKER -> {
+                            if (hasLocationPermission() && (!uiState.hasBackgroundLocation || !uiState.isBatteryUnrestricted)) {
+                                item(key = "background_protection_guard") {
+                                    BackgroundProtectionCard(
+                                        hasBackgroundLocation = uiState.hasBackgroundLocation,
+                                        isBatteryUnrestricted = uiState.isBatteryUnrestricted,
+                                        onRequestBackgroundLocation = requestBackgroundLocation,
+                                        onOpenBatterySettings = { context.openBatteryOptimizationSettings() },
+                                        modifier = Modifier.widthIn(max = 560.dp),
+                                    )
+                                }
+                            }
+
                             item(key = "hero_progress_ring") {
                                 AnimatedCardEntrance(delayMillis = 0) {
                                     ProgressRingHeaderCard(
@@ -403,6 +438,7 @@ fun TrackerDashboardScreen(
                                         currentSpeedKmh = uiState.currentSpeedKmh,
                                         activeSpeedTier = uiState.activeSpeedTier,
                                         isTracking = uiState.isTracking,
+                                        isStationaryIdle = uiState.isStationaryIdle,
                                         isAcquiringInitialFix = uiState.isAcquiringInitialFix,
                                         onCopyCoordinates = copyCoordsToClipboard,
                                         modifier = Modifier.widthIn(max = 560.dp),
@@ -421,6 +457,7 @@ fun TrackerDashboardScreen(
                                         historyCountdownSec = uiState.historyCountdownSec,
                                         activeHistoryIntervalSec = uiState.activeHistoryIntervalSec,
                                         isTracking = uiState.isTracking,
+                                        isStationaryIdle = uiState.isStationaryIdle,
                                         modifier = Modifier.widthIn(max = 560.dp),
                                     )
                                 }
@@ -502,7 +539,10 @@ fun TrackerDashboardScreen(
                                         historySyncMode = uiState.historySyncMode,
                                         currentSpeedKmh = uiState.currentSpeedKmh,
                                         activeSpeedTier = uiState.activeSpeedTier,
+                                        storageUsage = uiState.storageUsage,
                                         hasPermission = hasLocationPermission(),
+                                        hasBackgroundLocation = uiState.hasBackgroundLocation,
+                                        isBatteryUnrestricted = uiState.isBatteryUnrestricted,
                                         isTracking = uiState.isTracking,
                                         isWakeLockActive = uiState.isWakeLockActive,
                                         onSelectThemeMode = onSelectThemeMode,
@@ -518,6 +558,21 @@ fun TrackerDashboardScreen(
                                         },
                                         onPickProfileImage = onPickProfileImage,
                                         onRemoveProfileImage = onRemoveProfileImage,
+                                        onClearCache = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            onClearCache { freedBytes ->
+                                                toastMessage = if (freedBytes > 0L) {
+                                                    context.getString(
+                                                        R.string.toast_cache_cleared,
+                                                        AppStorageManager.formatByteSize(freedBytes),
+                                                    )
+                                                } else {
+                                                    cacheAlreadyCleanLabel
+                                                }
+                                            }
+                                        },
+                                        onRequestBackgroundLocation = requestBackgroundLocation,
+                                        onOpenBatterySettings = { context.openBatteryOptimizationSettings() },
                                         onOpenSettings = { context.openAppSettings() },
                                         onLogout = { showLogoutSheet = true },
                                         modifier = Modifier.widthIn(max = 560.dp),
@@ -571,6 +626,7 @@ private fun CleanTopAppBar(
     profileImagePath: String?,
     profileImageVersion: Long,
     isTracking: Boolean,
+    isStationaryIdle: Boolean,
     isWakeLockActive: Boolean,
     onAvatarClick: () -> Unit,
     onLogout: () -> Unit,
@@ -642,9 +698,9 @@ private fun CleanTopAppBar(
                             ) {
                                 Icon(
                                     imageVector = if (isWakeLockActive) {
-                                        Icons.Filled.WbSunny
+                                        AppIcons.WbSunny
                                     } else {
-                                        Icons.Filled.ScreenLockPortrait
+                                        AppIcons.ScreenLockPortrait
                                     },
                                     contentDescription = null,
                                     tint = if (isWakeLockActive) {
@@ -674,24 +730,29 @@ private fun CleanTopAppBar(
                     }
                 }
 
+                val isIdleNow = isTracking && isStationaryIdle
                 StatusPillBadge(
-                    label = if (isTracking) {
-                        stringResource(R.string.status_tracking_live)
-                    } else {
-                        stringResource(R.string.status_standby)
+                    label = when {
+                        isIdleNow -> stringResource(R.string.status_tracking_idle)
+                        isTracking -> stringResource(R.string.status_tracking_live)
+                        else -> stringResource(R.string.status_standby)
                     },
-                    dotColor = if (isTracking) telemetryColors.liveGreen else telemetryColors.mutedText,
-                    bgColor = if (isTracking) {
-                        telemetryColors.liveGreenContainer
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainer
+                    dotColor = when {
+                        isIdleNow -> telemetryColors.countdownAmber
+                        isTracking -> telemetryColors.liveGreen
+                        else -> telemetryColors.mutedText
                     },
-                    textColor = if (isTracking) {
-                        telemetryColors.liveGreenText
-                    } else {
-                        telemetryColors.mutedText
+                    bgColor = when {
+                        isIdleNow -> telemetryColors.countdownAmberContainer
+                        isTracking -> telemetryColors.liveGreenContainer
+                        else -> MaterialTheme.colorScheme.surfaceContainer
                     },
-                    isPulsing = isTracking,
+                    textColor = when {
+                        isIdleNow -> telemetryColors.countdownAmberText
+                        isTracking -> telemetryColors.liveGreenText
+                        else -> telemetryColors.mutedText
+                    },
+                    isPulsing = isTracking && !isIdleNow,
                 )
 
                 IconButton(
@@ -701,7 +762,7 @@ private fun CleanTopAppBar(
                         .testTag("logout_button"),
                 ) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Logout,
+                        imageVector = AppIcons.Logout,
                         contentDescription = stringResource(R.string.cd_logout_icon),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(20.dp),
@@ -722,36 +783,6 @@ private fun ProgressRingHeaderCard(
     val totalSyncs = uiState.liveSyncCount + uiState.historyLogCount
     val cycleSec = uiState.activeHistoryIntervalSec.coerceAtLeast(1)
 
-    val targetFraction = if (uiState.isTracking) {
-        ((cycleSec - uiState.historyCountdownSec.coerceIn(0, cycleSec)) / cycleSec.toFloat())
-            .coerceIn(0.04f, 1f)
-    } else {
-        0f
-    }
-    val animatedSweep by animateFloatAsState(
-        targetValue = targetFraction * 360f,
-        animationSpec = tween(durationMillis = 550, easing = FastOutSlowInEasing),
-        label = "progressRingSweep",
-    )
-
-    val ringPulse = rememberInfiniteTransition(label = "ringPulseGlow")
-    val glowAlpha by ringPulse.animateFloat(
-        initialValue = 0.06f,
-        targetValue = 0.24f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1400, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "ringGlowAlpha",
-    )
-
-    val ringColor = if (uiState.isTracking) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        telemetryColors.cardBorder
-    }
-    val trackColor = telemetryColors.accentContainer
-
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -768,70 +799,21 @@ private fun ProgressRingHeaderCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.size(94.dp),
-            ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val strokeWidth = 9.dp.toPx()
-                    val inset = strokeWidth / 2f + 2.dp.toPx()
-                    val arcSize = Size(size.width - inset * 2f, size.height - inset * 2f)
-                    val topLeft = Offset(inset, inset)
-
-                    if (uiState.isTracking) {
-                        drawCircle(
-                            color = ringColor.copy(alpha = glowAlpha),
-                            radius = size.minDimension / 2f,
-                        )
-                    }
-
-                    drawArc(
-                        color = trackColor,
-                        startAngle = 0f,
-                        sweepAngle = 360f,
-                        useCenter = false,
-                        topLeft = topLeft,
-                        size = arcSize,
-                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
-                    )
-
-                    if (animatedSweep > 0f) {
-                        drawArc(
-                            color = ringColor,
-                            startAngle = -90f,
-                            sweepAngle = animatedSweep,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
-                        )
-                    }
-                }
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    AnimatedRollingNumber(
-                        value = if (uiState.isTracking) "${uiState.historyCountdownSec}s" else "${cycleSec}s",
-                        style = MaterialTheme.typography.headlineSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontFeatureSettings = "tnum",
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.testTag("progress_ring_countdown"),
-                    )
-                    Text(
-                        text = "${cycleSec}s cycle",
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = telemetryColors.mutedText,
-                    )
-                }
-            }
+            LiquidWaveSecondsLoader(
+                secondsRemaining = uiState.historyCountdownSec,
+                cycleSeconds = cycleSec,
+                isTracking = uiState.isTracking,
+                isIdle = uiState.isStationaryIdle,
+                size = 104.dp,
+            )
 
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                val isIdleNow = uiState.isTracking && uiState.isStationaryIdle
                 Text(
-                    text = stringResource(R.string.header_cycle_title),
+                    text = if (isIdleNow) "Tracker Idle" else stringResource(R.string.header_cycle_title),
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.Bold,
                     ),
@@ -839,6 +821,8 @@ private fun ProgressRingHeaderCard(
                 )
                 Text(
                     text = when {
+                        isIdleNow ->
+                            stringResource(R.string.idle_header_subtitle)
                         uiState.isTracking && uiState.historySyncMode == HistorySyncMode.SPEED_ADAPTIVE ->
                             "Live every 2s · ${uiState.activeSpeedTier.label} (${cycleSec}s history)"
                         uiState.isTracking ->
@@ -887,7 +871,7 @@ private fun ProgressRingHeaderCard(
                             horizontalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
                             Icon(
-                                imageVector = Icons.Filled.Speed,
+                                imageVector = AppIcons.Speed,
                                 contentDescription = null,
                                 tint = if (uiState.isTracking) {
                                     telemetryColors.liveGreenText
@@ -950,12 +934,14 @@ private fun LiveCoordinatesCard(
     currentSpeedKmh: Float,
     activeSpeedTier: SpeedHistoryTier,
     isTracking: Boolean,
+    isStationaryIdle: Boolean,
     isAcquiringInitialFix: Boolean,
     onCopyCoordinates: (Double, Double) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val telemetryColors = LocalTelemetryColors.current
     val showShimmer = (isAcquiringInitialFix || isTracking) && location == null
+    val isIdleNow = isTracking && isStationaryIdle
 
     val latFormatted = location?.let { String.format(Locale.US, "%.6f°", it.latitude) } ?: "--.------°"
     val lngFormatted = location?.let { String.format(Locale.US, "%.6f°", it.longitude) } ?: "--.------°"
@@ -963,6 +949,12 @@ private fun LiveCoordinatesCard(
     val speedRounded = currentSpeedKmh.roundToInt()
 
     val (badgeText, badgeDot, badgeBg, badgeFg) = when {
+        isIdleNow -> Quadruple(
+            stringResource(R.string.status_tracking_idle),
+            telemetryColors.countdownAmber,
+            telemetryColors.countdownAmberContainer,
+            telemetryColors.countdownAmberText,
+        )
         isTracking -> Quadruple(
             stringResource(R.string.status_tracking_live),
             telemetryColors.liveGreen,
@@ -1045,7 +1037,7 @@ private fun LiveCoordinatesCard(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
                                 Icon(
-                                    imageVector = Icons.Filled.ContentCopy,
+                                    imageVector = AppIcons.ContentCopy,
                                     contentDescription = stringResource(R.string.cd_copy_coords),
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(12.dp),
@@ -1066,8 +1058,45 @@ private fun LiveCoordinatesCard(
                         dotColor = badgeDot,
                         bgColor = badgeBg,
                         textColor = badgeFg,
-                        isPulsing = isTracking || isAcquiringInitialFix,
+                        isPulsing = (isTracking && !isIdleNow) || isAcquiringInitialFix,
                     )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = isIdleNow,
+                enter = expandVertically(tween(220)) + fadeIn(tween(200)),
+                exit = shrinkVertically(tween(180)) + fadeOut(tween(150)),
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = telemetryColors.countdownAmberContainer,
+                    border = BorderStroke(1.dp, telemetryColors.countdownAmber.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("stationary_idle_banner"),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = AppIcons.PauseCircleOutline,
+                            contentDescription = null,
+                            tint = telemetryColors.countdownAmberText,
+                            modifier = Modifier.size(17.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.idle_card_banner),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                            color = telemetryColors.countdownAmberText,
+                        )
+                    }
                 }
             }
 
@@ -1114,7 +1143,7 @@ private fun LiveCoordinatesCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Speed,
+                            imageVector = AppIcons.Speed,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(16.dp),
@@ -1279,12 +1308,18 @@ private fun SyncStatusCardsRow(
     historyCountdownSec: Int,
     activeHistoryIntervalSec: Int,
     isTracking: Boolean,
+    isStationaryIdle: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val telemetryColors = LocalTelemetryColors.current
+    val isIdleNow = isTracking && isStationaryIdle
     val cycleSec = activeHistoryIntervalSec.coerceAtLeast(1)
     val countdownProgress by animateFloatAsState(
-        targetValue = if (isTracking) (historyCountdownSec.coerceIn(0, cycleSec) / cycleSec.toFloat()) else 1f,
+        targetValue = when {
+            isIdleNow -> 0f
+            isTracking -> (historyCountdownSec.coerceIn(0, cycleSec) / cycleSec.toFloat())
+            else -> 1f
+        },
         animationSpec = tween(durationMillis = 450),
         label = "historyCardBarProgress",
     )
@@ -1329,26 +1364,48 @@ private fun SyncStatusCardsRow(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = telemetryColors.liveGreenContainer,
+                        color = if (isIdleNow) {
+                            telemetryColors.countdownAmberContainer
+                        } else {
+                            telemetryColors.liveGreenContainer
+                        },
                         modifier = Modifier
                             .size(34.dp)
                             .scale(1f + syncHeartbeat.value * 0.08f),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                imageVector = if (isSendingCurrent) {
-                                    Icons.Filled.CloudUpload
-                                } else {
-                                    Icons.Filled.CloudDone
+                                imageVector = when {
+                                    isIdleNow -> AppIcons.PauseCircleOutline
+                                    isSendingCurrent -> AppIcons.CloudUpload
+                                    else -> AppIcons.CloudDone
                                 },
                                 contentDescription = null,
-                                tint = telemetryColors.liveGreenText,
+                                tint = if (isIdleNow) {
+                                    telemetryColors.countdownAmberText
+                                } else {
+                                    telemetryColors.liveGreenText
+                                },
                                 modifier = Modifier.size(18.dp),
                             )
                         }
                     }
 
-                    if (isSendingCurrent) {
+                    if (isIdleNow) {
+                        Surface(
+                            shape = CircleShape,
+                            color = telemetryColors.countdownAmberContainer,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.status_tracking_idle),
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                ),
+                                color = telemetryColors.countdownAmberText,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            )
+                        }
+                    } else if (isSendingCurrent) {
                         CircularProgressIndicator(
                             strokeWidth = 2.dp,
                             color = telemetryColors.liveGreen,
@@ -1375,10 +1432,10 @@ private fun SyncStatusCardsRow(
 
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
-                        text = if (isSendingCurrent) {
-                            stringResource(R.string.label_uploading)
-                        } else {
-                            stringResource(R.string.label_last_sync)
+                        text = when {
+                            isIdleNow -> stringResource(R.string.idle_waiting_move)
+                            isSendingCurrent -> stringResource(R.string.label_uploading)
+                            else -> stringResource(R.string.label_last_sync)
                         },
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                         color = telemetryColors.mutedText,
@@ -1389,7 +1446,7 @@ private fun SyncStatusCardsRow(
                             fontWeight = FontWeight.SemiBold,
                             fontFeatureSettings = "tnum",
                         ),
-                        color = telemetryColors.liveGreenText,
+                        color = if (isIdleNow) telemetryColors.countdownAmberText else telemetryColors.liveGreenText,
                         modifier = Modifier.testTag("live_sync_last_time"),
                     )
                 }
@@ -1421,7 +1478,7 @@ private fun SyncStatusCardsRow(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                imageVector = Icons.Filled.History,
+                                imageVector = if (isIdleNow) AppIcons.PauseCircleOutline else AppIcons.History,
                                 contentDescription = null,
                                 tint = telemetryColors.countdownAmberText,
                                 modifier = Modifier.size(18.dp),
@@ -1434,7 +1491,11 @@ private fun SyncStatusCardsRow(
                         color = telemetryColors.countdownAmberContainer,
                     ) {
                         Text(
-                            text = if (isTracking) "${historyCountdownSec}s" else "${cycleSec}s",
+                            text = when {
+                                isIdleNow -> stringResource(R.string.status_tracking_idle)
+                                isTracking -> "${historyCountdownSec}s"
+                                else -> "${cycleSec}s"
+                            },
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 fontFeatureSettings = "tnum",
@@ -1470,7 +1531,11 @@ private fun SyncStatusCardsRow(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = stringResource(R.string.label_next_upload),
+                            text = if (isIdleNow) {
+                                stringResource(R.string.idle_waiting_move)
+                            } else {
+                                stringResource(R.string.label_next_upload)
+                            },
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                             color = telemetryColors.mutedText,
                         )
@@ -1549,43 +1614,60 @@ private fun StatusTimelineCard(
         ),
         TimelineStage(
             title = stringResource(R.string.timeline_step_live_title),
-            subtitle = if (uiState.liveSyncCount > 0) {
-                "${uiState.liveSyncCount} sent · Last ${uiState.lastLiveSyncTime ?: "--:--:--"}"
-            } else if (uiState.isTracking) {
-                "Scheduler active (every 2s)"
-            } else {
-                "Paused"
+            subtitle = when {
+                uiState.isTracking && uiState.isStationaryIdle ->
+                    "Idle · Syncs automatically when moving"
+                uiState.liveSyncCount > 0 ->
+                    "${uiState.liveSyncCount} sent · Last ${uiState.lastLiveSyncTime ?: "--:--:--"}"
+                uiState.isTracking ->
+                    "Scheduler active (every 2s)"
+                else -> "Paused"
             },
             isCompleted = uiState.liveSyncCount > 0,
             isActive = uiState.isTracking,
-            accentColor = MaterialTheme.colorScheme.primary,
-            badgeText = if (uiState.isTracking) "Active" else "Standby",
-            badgeBg = if (uiState.isTracking) {
-                telemetryColors.accentContainer
+            accentColor = if (uiState.isTracking && uiState.isStationaryIdle) {
+                telemetryColors.countdownAmber
             } else {
-                MaterialTheme.colorScheme.surfaceContainer
-            },
-            badgeFg = if (uiState.isTracking) {
                 MaterialTheme.colorScheme.primary
-            } else {
-                telemetryColors.mutedText
+            },
+            badgeText = when {
+                uiState.isTracking && uiState.isStationaryIdle -> stringResource(R.string.status_tracking_idle)
+                uiState.isTracking -> "Active"
+                else -> "Standby"
+            },
+            badgeBg = when {
+                uiState.isTracking && uiState.isStationaryIdle -> telemetryColors.countdownAmberContainer
+                uiState.isTracking -> telemetryColors.accentContainer
+                else -> MaterialTheme.colorScheme.surfaceContainer
+            },
+            badgeFg = when {
+                uiState.isTracking && uiState.isStationaryIdle -> telemetryColors.countdownAmberText
+                uiState.isTracking -> MaterialTheme.colorScheme.primary
+                else -> telemetryColors.mutedText
             },
         ),
         TimelineStage(
             title = stringResource(R.string.timeline_step_history_title),
-            subtitle = if (uiState.isTracking) {
-                "${uiState.historyLogCount} logged · ${uiState.activeSpeedTier.label} (${uiState.activeHistoryIntervalSec}s)"
-            } else if (uiState.historyLogCount > 0) {
-                "${uiState.historyLogCount} logged · Last ${uiState.lastHistorySyncTime ?: "--:--:--"}"
-            } else if (uiState.historySyncMode == HistorySyncMode.SPEED_ADAPTIVE) {
-                "Speed-adaptive (15s–120s) while tracking"
-            } else {
-                "Uploads every 60s while tracking"
+            subtitle = when {
+                uiState.isTracking && uiState.isStationaryIdle ->
+                    "Idle · Syncs when moving (${uiState.historyLogCount} logged)"
+                uiState.isTracking ->
+                    "${uiState.historyLogCount} logged · ${uiState.activeSpeedTier.label} (${uiState.activeHistoryIntervalSec}s)"
+                uiState.historyLogCount > 0 ->
+                    "${uiState.historyLogCount} logged · Last ${uiState.lastHistorySyncTime ?: "--:--:--"}"
+                uiState.historySyncMode == HistorySyncMode.SPEED_ADAPTIVE ->
+                    "Speed-adaptive (15s–120s) while moving"
+                else ->
+                    "Uploads every 60s while moving"
             },
             isCompleted = uiState.historyLogCount > 0,
             isActive = uiState.isTracking,
             accentColor = telemetryColors.countdownAmber,
-            badgeText = if (uiState.isTracking) "${uiState.historyCountdownSec}s" else "${uiState.activeHistoryIntervalSec}s",
+            badgeText = when {
+                uiState.isTracking && uiState.isStationaryIdle -> stringResource(R.string.status_tracking_idle)
+                uiState.isTracking -> "${uiState.historyCountdownSec}s"
+                else -> "${uiState.activeHistoryIntervalSec}s"
+            },
             badgeBg = if (uiState.isTracking) {
                 telemetryColors.countdownAmberContainer
             } else {
@@ -1864,7 +1946,7 @@ private fun RecentEntriesCard(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Schedule,
+                            imageVector = AppIcons.Schedule,
                             contentDescription = null,
                             tint = telemetryColors.mutedText,
                             modifier = Modifier.size(18.dp),
@@ -1910,7 +1992,7 @@ private fun RecentEntriesCard(
                                 imageVector = if (log.success) {
                                     Icons.Filled.CheckCircle
                                 } else {
-                                    Icons.Filled.ErrorOutline
+                                    AppIcons.ErrorOutline
                                 },
                                 contentDescription = null,
                                 tint = when {
@@ -1964,7 +2046,7 @@ private fun RecentEntriesCard(
                             )
 
                             Icon(
-                                imageVector = Icons.Filled.ExpandMore,
+                                imageVector = AppIcons.ExpandMore,
                                 contentDescription = stringResource(R.string.cd_expand_entry),
                                 tint = telemetryColors.mutedText,
                                 modifier = Modifier
@@ -2039,7 +2121,7 @@ private fun RecentEntriesCard(
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                                             ) {
                                                 Icon(
-                                                    imageVector = Icons.Filled.ContentCopy,
+                                                    imageVector = AppIcons.ContentCopy,
                                                     contentDescription = stringResource(R.string.cd_copy_coords),
                                                     tint = MaterialTheme.colorScheme.primary,
                                                     modifier = Modifier.size(12.dp),
@@ -2097,7 +2179,7 @@ private fun TrackingErrorBanner(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.ErrorOutline,
+                        imageVector = AppIcons.ErrorOutline,
                         contentDescription = null,
                         tint = telemetryColors.stopRed,
                         modifier = Modifier
@@ -2227,7 +2309,7 @@ private fun ThumbZoneActionBar(
                                 )
                             } else {
                                 Icon(
-                                    imageVector = Icons.Filled.RadioButtonChecked,
+                                    imageVector = AppIcons.RadioButtonChecked,
                                     contentDescription = null,
                                     modifier = Modifier.size(20.dp),
                                 )
@@ -2270,9 +2352,9 @@ private fun MinimalBottomNavigationBar(
                 icon = {
                     Icon(
                         imageVector = if (selectedTab == TrackerNavTab.TRACKER) {
-                            Icons.Filled.GpsFixed
+                            AppIcons.GpsFixed
                         } else {
-                            Icons.Outlined.GpsFixed
+                            AppIcons.GpsFixedOutlined
                         },
                         contentDescription = stringResource(R.string.nav_tracker),
                     )
@@ -2298,11 +2380,7 @@ private fun MinimalBottomNavigationBar(
                 onClick = { onSelectTab(TrackerNavTab.ACTIVITY) },
                 icon = {
                     Icon(
-                        imageVector = if (selectedTab == TrackerNavTab.ACTIVITY) {
-                            Icons.Filled.Timeline
-                        } else {
-                            Icons.Outlined.Timeline
-                        },
+                        imageVector = AppIcons.Timeline,
                         contentDescription = stringResource(R.string.nav_activity),
                     )
                 },
@@ -2428,6 +2506,113 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
+@Composable
+private fun BackgroundProtectionCard(
+    hasBackgroundLocation: Boolean,
+    isBatteryUnrestricted: Boolean,
+    onRequestBackgroundLocation: () -> Unit,
+    onOpenBatterySettings: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val telemetryColors = LocalTelemetryColors.current
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = telemetryColors.countdownAmberContainer,
+        border = BorderStroke(1.dp, telemetryColors.countdownAmber.copy(alpha = 0.4f)),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("background_protection_card"),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = AppIcons.WarningAmber,
+                    contentDescription = null,
+                    tint = telemetryColors.countdownAmberText,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = stringResource(R.string.bg_guard_title),
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = telemetryColors.countdownAmberText,
+                )
+            }
+
+            Text(
+                text = stringResource(R.string.bg_guard_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = telemetryColors.countdownAmberText.copy(alpha = 0.9f),
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (!hasBackgroundLocation) {
+                    Button(
+                        onClick = onRequestBackgroundLocation,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = telemetryColors.countdownAmberText,
+                            contentColor = Color.White,
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("allow_background_location_button"),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.bg_guard_allow_always),
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
+                if (!isBatteryUnrestricted) {
+                    OutlinedButton(
+                        onClick = onOpenBatterySettings,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, telemetryColors.countdownAmberText.copy(alpha = 0.5f)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = telemetryColors.countdownAmberText,
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("unrestrict_battery_button"),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.bg_guard_battery_btn),
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun Context.openAppSettings() {
     val intent = Intent(
         Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
@@ -2436,4 +2621,17 @@ private fun Context.openAppSettings() {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     runCatching { startActivity(intent) }
+}
+
+private fun Context.openBatteryOptimizationSettings() {
+    val batteryIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    val opened = runCatching {
+        startActivity(batteryIntent)
+        true
+    }.getOrDefault(false)
+    if (!opened) {
+        openAppSettings()
+    }
 }

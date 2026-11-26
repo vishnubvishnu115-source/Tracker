@@ -7,7 +7,9 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Build
 import android.os.Looper
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import com.example.data.model.GpsLocation
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -39,6 +41,26 @@ class LocationTrackerClient(private val context: Context) {
             Manifest.permission.ACCESS_COARSE_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED
         return fine || coarse
+    }
+
+    fun hasBackgroundLocationPermission(): Boolean {
+        if (!hasLocationPermission()) return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    fun isBatteryOptimizationIgnored(): Boolean {
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            ?: return true
+        return runCatching {
+            powerManager.isIgnoringBatteryOptimizations(context.packageName)
+        }.getOrDefault(false)
     }
 
     fun isLocationEnabled(): Boolean {
